@@ -982,7 +982,8 @@ dvr_entry_create(const char *uuid, htsmsg_t *conf, int clone)
   /* Extract episode info */
   s = htsmsg_get_str(conf, "episode");
   if (s) {
-    extract_season_episode(&de->de_epnum, s);
+    if (!extract_season_episode(&de->de_epnum, s))
+      de->de_epnum.text = strdup(s);
   } else {
     m = htsmsg_get_map(conf, "episode");
     if (m)
@@ -2464,6 +2465,17 @@ dvr_entry_start_recording(dvr_entry_t *de, int clone)
   tvhinfo(LS_DVR, "\"%s\" on \"%s\" recorder starting",
 	  lang_str_get(de->de_title, NULL), DVR_CH_NAME(de));
 
+  /*
+   * The running flag is updated only on the event change. When the DVR
+   * entry is added too late, the running timers might not be updated.
+   */
+  if (de->de_bcast && de->de_running_start == 0 && de->de_running_stop == 0) {
+    epg_broadcast_t *ebc = epg_broadcast_get_prev(de->de_bcast);
+    if (de->de_bcast->running != EPG_RUNNING_NOTSET ||
+        (ebc && ebc->running != EPG_RUNNING_NOTSET))
+      de->de_running_stop = gclk();
+  }
+
   if (!clone && (r = dvr_rec_subscribe(de)) < 0) {
     dvr_entry_completed(de, r == -EPERM ? SM_CODE_USER_ACCESS :
                            (r == -EOVERFLOW ? SM_CODE_USER_LIMIT :
@@ -3224,13 +3236,31 @@ dvr_entry_class_disp_extratext_get(void *o)
   prop_ptr = NULL;
   if (de->de_subtitle)
     prop_ptr = lang_str_get(de->de_subtitle, idnode_lang(o));
-  if (prop_ptr == NULL || prop_ptr[0] == '\0')
+  if (prop_ptr == NULL)
     prop_ptr = lang_str_get(de->de_summary, idnode_lang(o));
-  if (prop_ptr == NULL || prop_ptr[0] == '\0')
+  if (prop_ptr == NULL)
     prop_ptr = lang_str_get(de->de_desc, idnode_lang(o));
   if (prop_ptr == NULL)
     prop_ptr = "";
   return &prop_ptr;
+}
+
+static int
+dvr_entry_class_disp_extratext_set(void *o, const void *v)
+{
+  dvr_entry_t *de = (dvr_entry_t *)o;
+  const char *lang = idnode_lang(o);
+  v = tvh_str_default(v, "?????");
+
+  if (lang_str_get(de->de_subtitle, lang))
+    return lang_str_set(&de->de_subtitle, v, lang);
+  if (lang_str_get(de->de_summary, lang))
+    return lang_str_set(&de->de_summary, v, lang);
+  if (lang_str_get(de->de_desc, lang))
+    return lang_str_set(&de->de_desc, v, lang);
+  // If subtitle, summary or descripcion is not set, the extratext
+  // field is stored in subtitle by default
+  return lang_str_set(&de->de_subtitle, v, lang);
 }
 
 static int
@@ -3256,7 +3286,7 @@ dvr_entry_class_disp_episode_get(void *o)
   dvr_entry_t *de = (dvr_entry_t *)o;
   const char *lang;
   char buf1[32], buf2[32];
-  if (de->de_epnum.e_num) {
+  if (de->de_epnum.e_num || de->de_epnum.s_num) {
     lang = idnode_lang(o);
     snprintf(buf1, sizeof(buf1), "%s %%d", tvh_gettext_lang(lang, N_("Season")));
     snprintf(buf2, sizeof(buf2), "%s %%d", tvh_gettext_lang(lang, N_("Episode")));
@@ -3715,9 +3745,10 @@ const idclass_t dvr_entry_class = {
       .type     = PT_STR,
       .id       = "disp_extratext",
       .name     = N_("Extra text"),
-      .desc     = N_("Subtitle, summary or description of the program (if any) (display only)."),
+      .desc     = N_("Subtitle, summary or description of the program (if any)."),
       .get      = dvr_entry_class_disp_extratext_get,
-      .opts     = PO_RDONLY | PO_NOSAVE,
+      .set      = dvr_entry_class_disp_extratext_set,
+      .opts     = PO_NOSAVE,
     },
     {
       .type     = PT_INT,
@@ -3969,7 +4000,7 @@ const idclass_t dvr_entry_class = {
       .desc     = N_("Episode number/ID."),
       .set      = dvr_entry_class_disp_episode_set,
       .get      = dvr_entry_class_disp_episode_get,
-      .opts     = PO_RDONLY | PO_HIDDEN | PO_NOSAVE,
+      .opts     = PO_HIDDEN | PO_NOSAVE,
     },
     {
       .type     = PT_STR,

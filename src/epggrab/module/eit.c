@@ -212,7 +212,7 @@ static int _eit_desc_short_event
     return -1;
   } else if ( r > 1 ) {
     if (!ev->title) ev->title = lang_str_create();
-    lang_str_add(ev->title, buf, lang, 0);
+    lang_str_add(ev->title, buf, lang);
   }
 
   len -= r;
@@ -225,7 +225,7 @@ static int _eit_desc_short_event
     return -1;
   } else if ( r > 1 ) {
     if (!ev->summary) ev->summary = lang_str_create();
-    lang_str_add(ev->summary, buf, lang, 0);
+    lang_str_add(ev->summary, buf, lang);
   }
 
   return 0;
@@ -557,7 +557,7 @@ _eit_scrape_text(eit_module_t *eit_mod, eit_event_t *ev)
     char title_summary[2048];
     lang_str_t *ls = lang_str_create();
     RB_FOREACH(se, ev->title, link) {
-      snprintf(title_summary, sizeof(title_summary), "%s %s",
+      snprintf(title_summary, sizeof(title_summary), "%s %% %s",
                se->str, lang_str_get(ev->summary, se->lang));
       if (eit_pattern_apply_list(buffer, sizeof(buffer), title_summary, se->lang, &eit_mod->p_scrape_title)) {
         tvhtrace(LS_TBL_EIT, "  scrape title '%s' from '%s' using %s",
@@ -621,6 +621,9 @@ static int _eit_process_event_one
                   bcdtoint(ptr[8] & 0xff) * 60 +
                   bcdtoint(ptr[9] & 0xff);
   running = (ptr[10] >> 5) & 0x07;
+
+  if (epg_channel_ignore_broadcast(ch, start))
+    return 0;
 
   /* Find broadcast */
   ebc  = epg_broadcast_find_by_time(ch, mod, start, stop, 1, &save2, &changes);
@@ -690,7 +693,7 @@ static int _eit_process_event_one
 
   /* Find episode */
   if (*ev->uri)
-    *save |= epg_broadcast_set_episodelink_uri(ebc, ev->suri, &changes);
+    *save |= epg_broadcast_set_episodelink_uri(ebc, ev->uri, &changes);
 
   /* Update Episode */
   if (ev->is_new > 0)
@@ -830,7 +833,7 @@ static int _eit_process_event
   if (lock)
     pthread_mutex_lock(&global_lock);
   svc = (mpegts_service_t *)service_find_by_uuid0(&ed->svc_uuid);
-  if (svc) {
+  if (svc && eit_mod->opaque) {
     LIST_FOREACH(ilm, &svc->s_channels, ilm_in1_link) {
       ch = (channel_t *)ilm->ilm_in2;
       if (!ch->ch_enabled || ch->ch_epg_parent) continue;
@@ -919,6 +922,7 @@ _eit_callback
   eit_data_t           *data;
   const char           *cridauth, *charset;
   int                   cridauth_len, charset_len, data_len;
+  eit_private_t        *priv;
 
   if (!epggrab_ota_running)
     return -1;
@@ -926,7 +930,10 @@ _eit_callback
   mm  = mt->mt_mux;
   map = mt->mt_opaque;
   mod = (epggrab_module_t *)map->om_module;
-  hacks = ((eit_private_t *)((epggrab_module_ota_t *)mod)->opaque)->hacks;
+  priv = (eit_private_t *)((epggrab_module_ota_t *)mod)->opaque;
+  if (priv == NULL)
+    return -1;
+  hacks = priv->hacks;
 
   /* Statistics */
   ths = mpegts_mux_find_subscription_by_name(mm, "epggrab");

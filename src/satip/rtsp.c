@@ -514,7 +514,7 @@ static void
 rtsp_manage_descramble(session_t *rs)
 {
   idnode_set_t *found;
-  mpegts_service_t *s, *snext, *master;
+  mpegts_service_t *s, *master;
   slave_subscription_t *sub;
   mpegts_apids_t pmt_pids;
   size_t si;
@@ -544,12 +544,14 @@ rtsp_manage_descramble(session_t *rs)
   }
 
   /* Remove already used or no-longer required services */
-  for (s = LIST_FIRST(&master->s_slaves); s; s = snext) {
-    snext = LIST_NEXT(s, s_slaves_link);
-    if (idnode_set_remove(found, &s->s_id))
+  for (si = 0; si < master->s_slaves.is_count; si++) {
+    s = (mpegts_service_t *)master->s_slaves.is_array[si];
+    if (idnode_set_remove(found, &s->s_id)) {
       used++;
-    else if (!idnode_set_exists(found, &s->s_id))
+    } else if (!idnode_set_exists(found, &s->s_id)) {
       rtsp_slave_remove(rs, master, s);
+      si--;
+    }
   }
 
   /* Add new ones */
@@ -1079,6 +1081,8 @@ rtsp_parse_cmd
     rs->rtp_peer_port = r;
     rs->frontend = fe > 0 ? fe : 1;
   } else {
+    if (!rs && !stream && cmd == RTSP_CMD_DESCRIBE)
+      rs = rtsp_new_session(hc->hc_peer_ipstr, msys, 0, -1);
     if (!rs || stream != rs->stream) {
       if (rs)
         errcode = HTTP_STATUS_NOT_FOUND;
@@ -1356,7 +1360,8 @@ rtsp_describe_session(session_t *rs, htsbuf_queue_t *q)
 {
   char buf[4096];
 
-  htsbuf_qprintf(q, "a=control:stream=%d\r\n", rs->stream);
+  if (rs->stream > 0)
+    htsbuf_qprintf(q, "a=control:stream=%d\r\n", rs->stream);
   htsbuf_qprintf(q, "a=tool:%s\r\n", config_get_http_server_name());
   htsbuf_append_str(q, "m=video 0 RTP/AVP 33\r\n");
   if (strchr(rtsp_ip, ':'))

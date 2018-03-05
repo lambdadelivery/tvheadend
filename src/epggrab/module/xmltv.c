@@ -378,7 +378,7 @@ static int _xmltv_parse_date_finished
           char year_buf[32];
           strncpy(year_buf, str, 4);
           year_buf[5] = 0;
-          const uint16_t year = atoi(year_buf);
+          const int64_t year = atoll(year_buf);
           /* Sanity check the year before copying it over. */
           if (year > 1800 && year < 2500) {
               return epg_broadcast_set_copyright_year(ebc, year, changes);
@@ -518,7 +518,7 @@ _xmltv_parse_lang_str ( lang_str_t **ls, htsmsg_t *tags, const char *tname )
       lang = NULL;
       if ((attrib = htsmsg_get_map(e, "attrib")))
         lang = htsmsg_get_str(attrib, "lang");
-      lang_str_add(*ls, htsmsg_get_str(e, "cdata"), lang, 0);
+      lang_str_add(*ls, htsmsg_get_str(e, "cdata"), lang);
     }
   }
 }
@@ -621,6 +621,9 @@ static int _xmltv_parse_programme_tags
   lang_str_t *subtitle = NULL;
   time_t first_aired = 0;
   int8_t bw = -1;
+
+  if (epg_channel_ignore_broadcast(ch, start))
+    return 0;
 
   memset(&epnum, 0, sizeof(epnum));
 

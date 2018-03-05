@@ -292,9 +292,12 @@ static int FNNAME \
   return 0; \
 }
 
-EPG_OBJECT_SET_FN(_epg_object_set_lang_str,    lang_str_t,    lang_str_destroy,    lang_str_compare,    lang_str_copy)
-EPG_OBJECT_SET_FN(_epg_object_set_string_list, string_list_t, string_list_destroy, string_list_cmp,     string_list_copy)
-EPG_OBJECT_SET_FN(_epg_object_set_htsmsg,      htsmsg_t,      htsmsg_destroy,      htsmsg_cmp,          htsmsg_copy)
+EPG_OBJECT_SET_FN(_epg_object_set_lang_str, lang_str_t,
+                  lang_str_destroy, lang_str_compare, lang_str_copy)
+EPG_OBJECT_SET_FN(_epg_object_set_string_list, string_list_t,
+                  string_list_destroy, string_list_cmp, string_list_copy)
+EPG_OBJECT_SET_FN(_epg_object_set_htsmsg, htsmsg_t,
+                  htsmsg_destroy, htsmsg_cmp, htsmsg_copy)
 #undef EPG_OBJECT_SET_FN
 
 #define EPG_OBJECT_SET_FN(FNNAME,TYPE) \
@@ -409,15 +412,16 @@ size_t epg_episode_num_format
   size_t i = 0;
   if (!epnum || !buf || !len) return 0;
   buf[0] = '\0';
-  if (epnum->e_num) {
+  if (epnum->e_num || epnum->s_num) {
     if (pre) tvh_strlcatf(buf, len, i, "%s", pre);
     if (sfmt && epnum->s_num) {
       tvh_strlcatf(buf, len, i, sfmt, epnum->s_num);
       if (cfmt && epnum->s_cnt)
         tvh_strlcatf(buf, len, i, cfmt, epnum->s_cnt);
-      if (sep) tvh_strlcatf(buf, len, i, "%s", sep);
+      if (sep && efmt && epnum->e_num) tvh_strlcatf(buf, len, i, "%s", sep);
     }
-    tvh_strlcatf(buf, len, i, efmt, epnum->e_num);
+    if (efmt && epnum->e_num)
+      tvh_strlcatf(buf, len, i, efmt, epnum->e_num);
     if (cfmt && epnum->e_cnt)
       tvh_strlcatf(buf, len, i, cfmt, epnum->e_cnt);
   } else if (epnum->text) {
@@ -463,6 +467,13 @@ int epg_episode_number_cmpfull ( const epg_episode_num_t *a, const epg_episode_n
 /* **************************************************************************
  * Channel
  * *************************************************************************/
+
+int epg_channel_ignore_broadcast(channel_t *ch, time_t start)
+{
+  if (ch->ch_epg_limit && start < gclk() + ch->ch_epg_limit * 3600 * 24)
+    return 1;
+  return 0;
+}
 
 static void _epg_channel_rem_broadcast 
   ( channel_t *ch, epg_broadcast_t *ebc, epg_broadcast_t *ebc_new )
@@ -837,7 +848,7 @@ static void _epg_broadcast_destroy ( void *eo )
     snprintf(id, sizeof(id), "%u", ebc->id);
     notify_delayed(id, "epg", "delete");
   }
-  if (ebc->title)       lang_str_destroy(ebc->summary);
+  if (ebc->title)       lang_str_destroy(ebc->title);
   if (ebc->subtitle)    lang_str_destroy(ebc->subtitle);
   if (ebc->summary)     lang_str_destroy(ebc->summary);
   if (ebc->description) lang_str_destroy(ebc->description);
@@ -1097,8 +1108,7 @@ static int _epg_broadcast_set_set
     if (uri == NULL || uri[0] == '\0')
       return 0;
   } else if (strcmp((*set)->uri ?: "", uri ?: "")) {
-    if (*set)
-      epg_set_broadcast_remove(tree, *set, ebc);
+    epg_set_broadcast_remove(tree, *set, ebc);
   } else {
     return 0;
   }
@@ -1444,10 +1454,16 @@ int epg_broadcast_set_first_aired
   return 0;
 }
 
-epg_broadcast_t *epg_broadcast_get_next ( epg_broadcast_t *broadcast )
+epg_broadcast_t *epg_broadcast_get_prev ( epg_broadcast_t *b )
 {
-  if ( !broadcast ) return NULL;
-  return RB_NEXT(broadcast, sched_link);
+  if (!b) return NULL;
+  return RB_PREV(b, sched_link);
+}
+
+epg_broadcast_t *epg_broadcast_get_next ( epg_broadcast_t *b )
+{
+  if (!b) return NULL;
+  return RB_NEXT(b, sched_link);
 }
 
 const char *epg_broadcast_get_title ( epg_broadcast_t *b, const char *lang )

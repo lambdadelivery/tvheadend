@@ -54,7 +54,7 @@ lang_str_t *lang_str_create2 ( const char *s, const char *lang )
 {
   lang_str_t *ls = lang_str_create();
   if (ls)
-    lang_str_add(ls, s, lang, 0);
+    lang_str_add(ls, s, lang);
   return ls;
 }
 
@@ -74,10 +74,13 @@ void lang_str_destroy ( lang_str_t *ls )
 /* Copy the lang_str instance */
 lang_str_t *lang_str_copy ( const lang_str_t *ls )
 {
-  lang_str_t *ret = lang_str_create();
+  lang_str_t *ret;
   lang_str_ele_t *e;
+  if (ls == NULL)
+    return NULL;
+  ret = lang_str_create();
   RB_FOREACH(e, ls, link)
-    lang_str_add(ret, e->str, e->lang, 0);
+    lang_str_add(ret, e->str, e->lang);
   return ret;
 }
 
@@ -114,7 +117,7 @@ static int _lang_str_add
   int save = 0;
   lang_str_ele_t *e, *ae;
 
-  if (!str) return 0;
+  if (!ls || !str) return 0;
 
   /* Get proper code */
   if (!lang) lang = lang_code_preferred();
@@ -146,7 +149,7 @@ static int _lang_str_add
 
   /* Update */
   } else if (cmd == LANG_STR_UPDATE && strcmp(str, e->str)) {
-    if (strlen(e->str) <= strlen(str)) {
+    if (strlen(e->str) >= strlen(str)) {
       strcpy(e->str, str);
       save = 1;
     } else {
@@ -167,7 +170,7 @@ static int _lang_str_add
 
 /* Add new string (or replace existing one) */
 int lang_str_add 
-  ( lang_str_t *ls, const char *str, const char *lang, int update )
+  ( lang_str_t *ls, const char *str, const char *lang )
 { 
   return _lang_str_add(ls, str, lang, LANG_STR_UPDATE);
 }
@@ -205,7 +208,7 @@ change:
   lang_str_destroy(*dst);
 change1:
   *dst = lang_str_create();
-  lang_str_add(*dst, str, lang, 1);
+  lang_str_add(*dst, str, lang);
   return 1;
 }
 
@@ -258,9 +261,11 @@ void lang_str_serialize_one
   ( htsmsg_t *m, const char *f, const char *str, const char *lang )
 {
   lang_str_t *l = lang_str_create();
-  lang_str_add(l, str, lang, 0);
-  lang_str_serialize(l, m, f);
-  lang_str_destroy(l);
+  if (l) {
+    lang_str_add(l, str, lang);
+    lang_str_serialize(l, m, f);
+    lang_str_destroy(l);
+  }
 }
 
 /* De-serialize map */
@@ -270,9 +275,11 @@ lang_str_t *lang_str_deserialize_map ( htsmsg_t *map )
   htsmsg_field_t *f;
   const char *str;
 
-  HTSMSG_FOREACH(f, map) {
-    if ((str = htsmsg_field_get_string(f))) {
-      lang_str_add(ret, str, f->hmf_name, 0);
+  if (ret) {
+    HTSMSG_FOREACH(f, map) {
+      if ((str = htsmsg_field_get_string(f))) {
+        lang_str_add(ret, str, f->hmf_name);
+      }
     }
   }
   return ret;
@@ -288,7 +295,7 @@ lang_str_t *lang_str_deserialize ( htsmsg_t *m, const char *n )
     return lang_str_deserialize_map(a);
   } else if ((str = htsmsg_get_str(m, n))) {
     lang_str_t *ret = lang_str_create();
-    lang_str_add(ret, str, NULL, 0);
+    lang_str_add(ret, str, NULL);
     return ret;
   }
   return NULL;

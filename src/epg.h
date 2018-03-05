@@ -417,7 +417,8 @@ int epg_broadcast_set_age_rating
   __attribute__((warn_unused_result));
 
 /* Accessors */
-epg_broadcast_t *epg_broadcast_get_next    ( epg_broadcast_t *b );
+epg_broadcast_t *epg_broadcast_get_prev( epg_broadcast_t *b );
+epg_broadcast_t *epg_broadcast_get_next( epg_broadcast_t *b );
 const char *epg_broadcast_get_title 
   ( epg_broadcast_t *b, const char *lang );
 const char *epg_broadcast_get_subtitle
@@ -445,6 +446,7 @@ size_t epg_broadcast_epnumber_format
 static inline int epg_episode_match(epg_broadcast_t *a, epg_broadcast_t *b)
 {
   if (a == NULL || b == NULL) return 0;
+  if (a->episodelink == NULL || b->episodelink == NULL) return 0;
   return a->episodelink == b->episodelink;
 }
 
@@ -457,6 +459,7 @@ epg_broadcast_t *epg_broadcast_deserialize
  * Channel - provides mapping from EPG channels to real channels
  * ***********************************************************************/
 
+int epg_channel_ignore_broadcast( struct channel *ch, time_t start );
 /* Unlink */
 void epg_channel_unlink ( struct channel *ch );
 /* Match now / next events */
