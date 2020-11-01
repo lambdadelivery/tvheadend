@@ -19,13 +19,14 @@
 #ifndef SERVICE_H__
 #define SERVICE_H__
 
-#include "sbuf.h"
+#include "esstream.h"
+#include "streaming.h"
 #include "htsmsg.h"
 #include "idnode.h"
-#include "profile.h"
-#include "descrambler.h"
-#include "input/mpegts/dvb.h"
 
+/**
+ *
+ */
 extern const idclass_t service_class;
 extern const idclass_t service_raw_class;
 
@@ -33,126 +34,25 @@ extern struct service_queue service_all;
 extern struct service_queue service_raw_all;
 extern struct service_queue service_raw_remove;
 
+/**
+ *
+ */
 struct channel;
 struct tvh_input;
 struct mpegts_apids;
+struct profile_chain;
+struct source_info;
+struct descramble_info;
+struct mpegts_apids;
 
 /**
- * Source information
+ *
  */
-typedef struct source_info {
-  tvh_uuid_t si_adapter_uuid;
-  tvh_uuid_t si_network_uuid;
-  tvh_uuid_t si_mux_uuid;
-  char *si_adapter;
-  char *si_network;
-  char *si_network_type;
-  char *si_satpos;
-  char *si_mux;
-  char *si_provider;
-  char *si_service;
-  int   si_type;
-} source_info_t;
-
-/**
- * Stream, one media component for a service.
- */
-typedef struct elementary_stream {
-
-  TAILQ_ENTRY(elementary_stream) es_link;
-  TAILQ_ENTRY(elementary_stream) es_filt_link;
-  int es_position;
-  struct service *es_service;
-
-  streaming_component_type_t es_type;
-  int es_index;
-
-  uint16_t es_aspect_num;
-  uint16_t es_aspect_den;
-
-  char es_lang[4];           /* ISO 639 2B 3-letter language code */
-  uint8_t es_audio_type;     /* Audio type */
-  uint8_t es_audio_version;  /* Audio version/layer */
-
-  uint16_t es_composition_id;
-  uint16_t es_ancillary_id;
-
-  int16_t es_pid;
-  uint16_t es_parent_pid;    /* For subtitle streams originating from 
-				a teletext stream. this is the pid
-				of the teletext stream */
-  int8_t es_pid_opened;      /* PID is opened */
-
-  int8_t es_cc;             /* Last CC */
-
-  int es_peak_presentation_delay; /* Max seen diff. of DTS and PTS */
-
-  /* PCR clocks */
-  int64_t  es_last_pcr;
-  int64_t  es_last_pcr_dts;
-
-  /* For service stream packet reassembly */
-
-  sbuf_t es_buf;
-
-  uint8_t  es_incomplete;
-  uint8_t  es_header_mode;
-  uint32_t es_header_offset;
-  uint32_t es_startcond;
-  uint32_t es_startcode;
-  uint32_t es_startcode_offset;
-  int es_parser_state;
-  int es_parser_ptr;
-  void *es_priv;          /* Parser private data */
-
-  sbuf_t es_buf_a;        // Audio packet reassembly
-
-  uint8_t *es_global_data;
-  int es_global_data_len;
-
-  struct th_pkt *es_curpkt;
-  struct streaming_message_queue es_backlog;
-  int64_t es_curpts;
-  int64_t es_curdts;
-  int64_t es_prevdts;
-  int64_t es_nextdts;
-  int es_frame_duration;
-  int es_width;
-  int es_height;
-
-  int es_meta_change;
-
-  /* CA ID's on this stream */
-  struct caid_list es_caids;
-
-  /* */
-
-  int es_delete_me;      /* Temporary flag for deleting streams */
-
-  /* Error log limiters */
-
-  tvhlog_limit_t es_cc_log;
-  tvhlog_limit_t es_pes_log;
-  tvhlog_limit_t es_pcr_log;
-  
-  char *es_nicename;
-
-  /* Teletext subtitle */ 
-  char es_blank; // Last subtitle was blank
-
-  /* SI section processing (horrible hack) */
-  void *es_section;
-
-  /* Filter temporary variable */
-  uint32_t es_filter;
-
-  /* HBBTV PSI table (AIT) */
-  mpegts_psi_table_t es_psi;
-
-} elementary_stream_t;
-
-
+LIST_HEAD(th_descrambler_list, th_descrambler);
 typedef TAILQ_HEAD(service_instance_list, service_instance) service_instance_list_t;
+LIST_HEAD(service_list, service);
+RB_HEAD(service_tree, service);
+TAILQ_HEAD(service_queue, service);
 
 /**
  *
@@ -160,25 +60,19 @@ typedef TAILQ_HEAD(service_instance_list, service_instance) service_instance_lis
 typedef struct service_instance {
 
   TAILQ_ENTRY(service_instance) si_link;
+  struct service *si_s; /* A reference is held */
 
-  int si_prio;
-
-  struct service *si_s; // A reference is held
-  int si_instance;       // Discriminator when having multiple adapters, etc
-
-  int si_error;        /* Set if subscription layer deem this cand
-                          to be broken. We typically set this if we
-                          have not seen any demuxed packets after
-                          the grace period has expired.
-                          The actual value is current time
-                       */
-
+  int si_prio;          /* Priority (higher value has more weight) */
+  int si_instance;      /* Discriminator when having multiple adapters, etc */
+  int si_error;         /* Set if subscription layer deem this cand
+                         * to be broken. We typically set this if we
+                         * have not seen any demuxed packets after
+                         * the grace period has expired.
+                         * The actual value is current time
+                         */
   time_t si_error_time;
-
-
-  int si_weight;         // Highest weight that holds this cand
-
-  int si_mark;           // For mark & sweep
+  int si_weight;        /* Highest weight that holds this cand */
+  int si_mark;          /* For mark & sweep */
 
   char si_source[128];
 
@@ -289,23 +183,12 @@ typedef struct service {
     ST_OTHER,
     ST_SDTV,
     ST_HDTV,
+    ST_FHDTV,
     ST_UHDTV,
     ST_RADIO
   } s_servicetype;
 
 // TODO: should this really be here?
-
-  /**
-   * PID carrying the programs PCR.
-   * XXX: We don't support transports that does not carry
-   * the PCR in one of the content streams.
-   */
-  uint16_t s_pcr_pid;
-
-  /**
-   * PID for the PMT of this MPEG-TS stream.
-   */
-  uint16_t s_pmt_pid;
 
   /**
    * Set if transport is enabled (the default).  If disabled it should
@@ -318,7 +201,6 @@ typedef struct service {
   int s_prio;
   int s_type_user;
   int s_pts_shift; // in ms (may be negative)
-  int s_pcr_boundary;
 
   LIST_ENTRY(service) s_active_link;
 
@@ -344,6 +226,8 @@ typedef struct service {
   void (*s_delete)(struct service *t, int delconf);
 
   void (*s_unref)(struct service *t);
+
+  struct mpegts_apids *(*s_pid_list)(struct service *t);
 
   int (*s_satip_source)(struct service *t);
 
@@ -372,7 +256,7 @@ typedef struct service {
   /**
    * Teletext...
    */
-  th_commercial_advice_t s_tt_commercial_advice;
+  commercial_advice_t s_tt_commercial_advice;
   time_t s_tt_clock;   /* Network clock as determined by teletext decoder */
  
   /**
@@ -428,7 +312,7 @@ typedef struct service {
    * This mutex also protects all elementary_stream_t instances for this
    * transport.
    */
-  pthread_mutex_t s_stream_mutex;
+  tvh_mutex_t s_stream_mutex;
 
   /**
    *
@@ -436,19 +320,19 @@ typedef struct service {
   int s_streaming_status;
 
   // Progress
-#define TSS_INPUT_HARDWARE   0x1
-#define TSS_INPUT_SERVICE    0x2
-#define TSS_MUX_PACKETS      0x4
-#define TSS_PACKETS          0x8
-#define TSS_NO_ACCESS        0x10
-#define TSS_CA_CHECK         0x20
+#define TSS_INPUT_HARDWARE   0x00000001
+#define TSS_INPUT_SERVICE    0x00000002
+#define TSS_MUX_PACKETS      0x00000004
+#define TSS_PACKETS          0x00000008
+#define TSS_NO_ACCESS        0x00000010
+#define TSS_CA_CHECK         0x00000020
 
 
   // Errors
-#define TSS_GRACEPERIOD      0x10000
-#define TSS_NO_DESCRAMBLER   0x20000
-#define TSS_TIMEOUT          0x40000
-#define TSS_TUNING           0x80000
+#define TSS_GRACEPERIOD      0x00010000
+#define TSS_NO_DESCRAMBLER   0x00020000
+#define TSS_TIMEOUT          0x00040000
+#define TSS_TUNING           0x00080000
 
 #define TSS_ERRORS           0xffff0000
 
@@ -482,15 +366,12 @@ typedef struct service {
   uint8_t s_scrambled_pass;
   th_descrambler_runtime_t *s_descramble;
   void *s_descrambler; /* last active descrambler */
-  descramble_info_t *s_descramble_info;
+  struct descramble_info *s_descramble_info;
 
   /**
-   * List of all and filtered components.
+   * Set of all and filtered components.
    */
-  struct elementary_stream_queue s_components;
-  struct elementary_stream_queue s_filt_components;
-  short s_last_pid;
-  elementary_stream_t *s_last_es;
+  elementary_set_t s_components;
 
   /**
    * Delivery pad, this is were we finally deliver all streaming output
@@ -498,10 +379,6 @@ typedef struct service {
   streaming_pad_t s_streaming_pad;
 
   tvhlog_limit_t s_tei_log;
-
-  int64_t s_current_pcr;
-  int64_t s_candidate_pcr;
-  uint8_t s_current_pcr_guess;
 
   /*
    * Local channel numbers per bouquet
@@ -516,17 +393,13 @@ typedef struct service {
 } service_t;
 
 
-
-
-
 void service_init(void);
 void service_done(void);
+
 
 int service_start(service_t *t, int instance, int weight, int flags,
                   int timeout, int postpone);
 void service_stop(service_t *t);
-
-void service_build_filter(service_t *t);
 
 service_t *service_create0(service_t *t, int service_type, const idclass_t *idc,
                            const char *uuid, int source_type, htsmsg_t *conf);
@@ -546,47 +419,30 @@ static inline service_t *service_find_by_uuid0(tvh_uuid_t *uuid)
 service_instance_t *service_find_instance(struct service *s,
                                           struct channel *ch,
                                           struct tvh_input *source,
-                                          profile_chain_t *prch,
+                                          struct profile_chain *prch,
                                           service_instance_list_t *sil,
                                           int *error, int weight,
                                           int flags, int timeout,
                                           int postpone);
 
-elementary_stream_t *service_stream_find_(service_t *t, int pid);
-
-static inline elementary_stream_t *
-service_stream_find(service_t *t, int pid)
-{
-  if (t->s_last_pid != (pid))
-    return service_stream_find_(t, pid);
-  else
-    return t->s_last_es;
-}
-
-elementary_stream_t *
-service_stream_type_find(service_t *t, streaming_component_type_t type);
-
-elementary_stream_t *service_stream_create(service_t *t, int pid,
-				     streaming_component_type_t type);
-
-elementary_stream_t *
-service_stream_type_modify(service_t *t, int pid,
-                           streaming_component_type_t type);
-
 void service_settings_write(service_t *t);
 
 const char *service_servicetype_txt(service_t *t);
 
-int service_has_audio_or_video(service_t *t);
-int service_has_no_audio(service_t *t, int filtered);
-int service_is_sdtv(service_t *t);
-int service_is_uhdtv(service_t *t);
-int service_is_hdtv(service_t *t);
-int service_is_radio(service_t *t);
-int service_is_other(service_t *t);
-#define service_is_tv(s) (service_is_hdtv(s) || service_is_sdtv(s) || service_is_uhdtv(s))
+static inline uint16_t service_id16(void *t)
+  { return ((service_t *)t)->s_components.set_service_id; }
 
-int service_is_encrypted ( service_t *t );
+int service_is_sdtv(const service_t *t);
+int service_is_uhdtv(const service_t *t);
+int service_is_fhdtv(const service_t *t);
+int service_is_hdtv(const service_t *t);
+int service_is_radio(const service_t *t);
+static inline int service_is_tv( const service_t *s)
+  { return service_is_hdtv(s) || service_is_sdtv(s) || service_is_uhdtv(s) || service_is_fhdtv(s); }
+static inline int service_is_other(const service_t *t)
+  { return !service_is_tv(t) && !service_is_radio(t); }
+
+int service_is_encrypted ( const service_t *t );
 
 void service_set_enabled ( service_t *t, int enabled, int _auto );
 
@@ -618,29 +474,23 @@ service_reset_streaming_status_flags(service_t *t, int flag)
     service_set_streaming_status_flags_(t, n & ~flag);
 }
 
-
-struct streaming_start;
-struct streaming_start *service_build_stream_start(service_t *t);
+streaming_start_t *service_build_streaming_start(service_t *t);
 
 void service_restart(service_t *t);
 
 void service_restart_streams(service_t *t);
 
-void service_stream_destroy(service_t *t, elementary_stream_t *st);
-
-void service_stream_type_destroy(service_t *t, streaming_component_type_t type);
-
 void service_request_save(service_t *t);
+
+void service_update_elementary_stream(service_t *t, elementary_stream_t *src);
 
 void service_source_info_free(source_info_t *si);
 
 void service_source_info_copy(source_info_t *dst, const source_info_t *src);
 
-void service_make_nicename(service_t *t);
+const char *service_make_nicename(service_t *t);
 
 const char *service_nicename(service_t *t);
-
-const char *service_component_nicename(elementary_stream_t *st);
 
 const char *service_adapter_nicename(service_t *t, char *buf, size_t len);
 

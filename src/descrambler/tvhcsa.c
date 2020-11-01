@@ -16,6 +16,11 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <assert.h>
+
 #include "tvhcsa.h"
 #include "input.h"
 #include "input/mpegts/tsdemux.h"
@@ -24,9 +29,6 @@
 #include "descrambler/algo/libaes128dec.h"
 #include "descrambler/algo/libdesdec.h"
 
-#include <stdlib.h>
-#include <unistd.h>
-#include <assert.h>
 
 static void
 tvhcsa_empty_flush
@@ -73,6 +75,8 @@ tvhcsa_csa_cbc_flush
   ( tvhcsa_t *csa, struct mpegts_service *s )
 {
 #if ENABLE_DVBCSA
+  tvhtrace(LS_CSA, "%p: CSA flush - descramble packets for service \"%s\" MAX=%d even=%d odd=%d fill=%d",
+           csa,((mpegts_service_t *)s)->s_dvb_svcname, csa->csa_cluster_size,csa->csa_fill_even,csa->csa_fill_odd,csa->csa_fill);
 
   if(csa->csa_fill_even) {
     csa->csa_tsbbatch_even[csa->csa_fill_even].data = NULL;
@@ -90,28 +94,7 @@ tvhcsa_csa_cbc_flush
   csa->csa_fill = 0;
 
 #else
-
-  int r, l;
-  unsigned char *vec[3];
-
-  vec[0] = csa->csa_tsbcluster;
-  vec[1] = csa->csa_tsbcluster + csa->csa_fill * 188;
-  vec[2] = NULL;
-
-  r = decrypt_packets(csa->csa_keys, vec);
-  if(r > 0) {
-    ts_recv_packet2(s, csa->csa_tsbcluster, r * 188);
-
-    l = csa->csa_fill - r;
-    assert(l >= 0);
-
-    if(l > 0)
-      memmove(csa->csa_tsbcluster, csa->csa_tsbcluster + r * 188, l * 188);
-    csa->csa_fill = l;
-  } else {
-    csa->csa_fill = 0;
-  }
-
+#error "Unknown CSA descrambler"
 #endif
 }
 
@@ -121,14 +104,13 @@ tvhcsa_csa_cbc_descramble
 {
   const uint8_t *tsb_end = tsb + tsb_len;
 
-  assert(csa->csa_fill >= 0 && csa->csa_fill < csa->csa_cluster_size);
+  assert(csa->csa_fill >= 0 && csa->csa_fill < csa->csa_fill_size);
 
 #if ENABLE_DVBCSA
   uint8_t *pkt;
-  int ev_od;
-  int len;
-  int offset;
-  int n;
+  int_fast8_t ev_od;
+  int_fast16_t len;
+  int_fast16_t offset;
 
   for ( ; tsb < tsb_end; tsb += 188) {
 
@@ -136,58 +118,53 @@ tvhcsa_csa_cbc_descramble
    memcpy(pkt, tsb, 188);
    csa->csa_fill++;
 
-   do { // handle this packet
-     if((pkt[3] & 0x80) == 0) // clear or reserved (0x40)
+   do { 			// handle this packet
+     if((pkt[3] & 0x80) == 0)	// clear or reserved (0x40)
        break;
      ev_od = pkt[3] & 0x40;
-     pkt[3] &= 0x3f;  // consider it decrypted now
-     if(pkt[3] & 0x20) { // incomplete packet
+     pkt[3] &= 0x3f; 		// consider it decrypted now
+     if(pkt[3] & 0x20) {	// incomplete packet
+       if(!(pkt[3] & 0x10))     // no payload - but why scrambled???
+         break;
        offset = 4 + pkt[4] + 1;
-       len = 188 - offset;
-       n = len >> 3;
-       // FIXME: //residue = len - (n << 3);
-       if(n == 0) { // decrypted==encrypted!
-         break; // this doesn't need more processing
+       if (offset >= 188){	// invalid offset (residue handling?)
+         if (tvhlog_limit(&csa->tvhcsa_loglimit, 30))
+           tvhtrace(LS_CSA, "invalid payload offset in packet for service \"%s\" (offset=%d pkt[3]=0x%02x pkt[4]=0x%02x)",
+                            ((mpegts_service_t *)s)->s_dvb_svcname, (int)offset, pkt[3], pkt[4]);
+         break;			// no more processing
        }
+       len = 188 - offset;
      } else {
        len = 184;
        offset = 4;
-       // FIXME: //n = 23;
-       // FIXME: //residue = 0;
      }
      if(ev_od == 0) {
        csa->csa_tsbbatch_even[csa->csa_fill_even].data = pkt + offset;
        csa->csa_tsbbatch_even[csa->csa_fill_even].len = len;
        csa->csa_fill_even++;
+       if(csa->csa_fill_even == csa->csa_cluster_size)
+         tvhcsa_csa_cbc_flush(csa, s);
      } else {
        csa->csa_tsbbatch_odd[csa->csa_fill_odd].data = pkt + offset;
        csa->csa_tsbbatch_odd[csa->csa_fill_odd].len = len;
        csa->csa_fill_odd++;
+       if(csa->csa_fill_odd == csa->csa_cluster_size)
+         tvhcsa_csa_cbc_flush(csa, s);
      }
    } while(0);
 
-   if(csa->csa_fill == csa->csa_cluster_size)
+   if(csa->csa_fill == csa->csa_fill_size )
      tvhcsa_csa_cbc_flush(csa, s);
 
   }
 
 #else
-
-  for ( ; tsb < tsb_end; tsb += 188 ) {
-
-    memcpy(csa->csa_tsbcluster + csa->csa_fill * 188, tsb, 188);
-    csa->csa_fill++;
-
-    if(csa->csa_fill == csa->csa_cluster_size)
-      tvhcsa_csa_cbc_flush(csa, s);
-
-  }
-
+#error "Unknown CSA descrambler"
 #endif
 }
 
 int
-tvhcsa_set_type( tvhcsa_t *csa, int type )
+tvhcsa_set_type( tvhcsa_t *csa, struct mpegts_service *s, int type )
 {
   if (csa->csa_type == type)
     return 0;
@@ -201,12 +178,13 @@ tvhcsa_set_type( tvhcsa_t *csa, int type )
 #if ENABLE_DVBCSA
     csa->csa_cluster_size  = dvbcsa_bs_batch_size();
 #else
-    csa->csa_cluster_size  = get_suggested_cluster_size();
+    csa->csa_cluster_size  = 0;
 #endif
-    /* Note: the optimized routines might read memory after last TS packet */
-    /*       allocate safe memory and fill it with zeros */
-    csa->csa_tsbcluster    = malloc((csa->csa_cluster_size + 1) * 188);
-    memset(csa->csa_tsbcluster + csa->csa_cluster_size * 188, 0, 188);
+    csa->csa_fill_size  = 3 * csa->csa_cluster_size;
+    tvhtrace(LS_CSA, "%p: service \"%s\" using CSA batch size = %d for decryption",
+             csa, ((mpegts_service_t *)s)->s_dvb_svcname, csa->csa_cluster_size );
+
+    csa->csa_tsbcluster    = malloc(csa->csa_fill_size * 188);
 #if ENABLE_DVBCSA
     csa->csa_tsbbatch_even = malloc((csa->csa_cluster_size + 1) *
                                     sizeof(struct dvbcsa_bs_batch_s));
@@ -214,8 +192,6 @@ tvhcsa_set_type( tvhcsa_t *csa, int type )
                                     sizeof(struct dvbcsa_bs_batch_s));
     csa->csa_key_even      = dvbcsa_bs_key_alloc();
     csa->csa_key_odd       = dvbcsa_bs_key_alloc();
-#else
-    csa->csa_keys          = get_key_struct();
 #endif
     break;
   case DESCRAMBLER_DES_NCB:
@@ -250,8 +226,6 @@ void tvhcsa_set_key_even( tvhcsa_t *csa, const uint8_t *even )
   case DESCRAMBLER_CSA_CBC:
 #if ENABLE_DVBCSA
     dvbcsa_bs_key_set(even, csa->csa_key_even);
-#else
-    set_even_control_word((csa)->csa_keys, even);
 #endif
     break;
   case DESCRAMBLER_DES_NCB:
@@ -263,7 +237,6 @@ void tvhcsa_set_key_even( tvhcsa_t *csa, const uint8_t *even )
   case DESCRAMBLER_AES128_ECB:
     aes128_set_even_control_word(csa->csa_priv, even);
     break;
-  default:
     assert(0);
   }
 }
@@ -275,8 +248,6 @@ void tvhcsa_set_key_odd( tvhcsa_t *csa, const uint8_t *odd )
   case DESCRAMBLER_CSA_CBC:
 #if ENABLE_DVBCSA
     dvbcsa_bs_key_set(odd, csa->csa_key_odd);
-#else
-    set_odd_control_word((csa)->csa_keys, odd);
 #endif
     break;
   case DESCRAMBLER_DES_NCB:
@@ -312,9 +283,6 @@ tvhcsa_destroy ( tvhcsa_t *csa )
     free(csa->csa_tsbbatch_odd);
   if (csa->csa_tsbbatch_even)
     free(csa->csa_tsbbatch_even);
-#else
-  if (csa->csa_keys)
-    free_key_struct(csa->csa_keys);
 #endif
   if (csa->csa_tsbcluster)
     free(csa->csa_tsbcluster);

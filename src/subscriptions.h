@@ -109,6 +109,7 @@ typedef struct th_subscription {
   streaming_target_t ths_input;
 
   streaming_target_t *ths_output;
+  streaming_target_t *ths_parser;
 
   int ths_flags;
   int ths_timeout;
@@ -146,6 +147,7 @@ typedef struct th_subscription {
 
 } th_subscription_t;
 
+LIST_HEAD(th_subscription_list, th_subscription);
 
 /**
  * Prototypes

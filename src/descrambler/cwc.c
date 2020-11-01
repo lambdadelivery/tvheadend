@@ -225,8 +225,8 @@ cwc_send_msg(void *cc, const uint8_t *msg, size_t len,
   if (len < 3)
     return -1;
 
-  /* note: the last 10 bytes is pad/checksum for des_encrypt() */
-  cm = malloc(sizeof(cc_message_t) + 12 + len + 10);
+  /* note: the last 16 bytes is pad/checksum for des_encrypt() */
+  cm = malloc(sizeof(cc_message_t) + 12 + len + 16);
 
   if (cm == NULL)
     return -1;
@@ -634,7 +634,7 @@ cwc_send_ecm(void *cc, cc_service_t *ct, cc_ecm_section_t *es,
              cc_card_data_t *pcard, const uint8_t *data, int len)
 {
   mpegts_service_t *t = (mpegts_service_t *)ct->td_service;
-  uint16_t sid = t->s_dvb_service_id;
+  uint16_t sid = service_id16(t);
   uint16_t seq;
   int r;
 
@@ -657,7 +657,7 @@ cwc_send_emm(void *cc, cc_service_t *ct,
 
   if (ct) {
     t = (mpegts_service_t *)ct->td_service;
-    sid = t->s_dvb_service_id;
+    sid = service_id16(t);
   }
 
   cwc_send_msg(cc, data, len, sid, 1, pcard->cs_ra.caid, provid, NULL);
@@ -786,8 +786,8 @@ caclient_t *cwc_create(void)
   cwc->cc_subsys = LS_CWC;
   cwc->cc_id     = "newcamd";
 
-  pthread_mutex_init(&cwc->cc_mutex, NULL);
-  tvh_cond_init(&cwc->cc_cond);
+  tvh_mutex_init(&cwc->cc_mutex, NULL);
+  tvh_cond_init(&cwc->cc_cond, 1);
   cwc->cac_free         = cwc_free;
   cwc->cac_start        = cc_service_start;
   cwc->cac_conf_changed = cwc_conf_changed;

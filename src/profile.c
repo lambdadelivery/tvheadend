@@ -272,6 +272,7 @@ profile_class_svfilter_list ( void *o, const char *lang )
     { N_("None"),                       PROFILE_SVF_NONE },
     { N_("SD: standard definition"),    PROFILE_SVF_SD },
     { N_("HD: high definition"),        PROFILE_SVF_HD },
+    { N_("FHD: full high definition"), PROFILE_SVF_FHD },
     { N_("UHD: ultra high definition"), PROFILE_SVF_UHD },
   };
   return strtab2htsmsg(tab, 1, lang);
@@ -348,9 +349,11 @@ const idclass_t profile_class =
     {
       .type     = PT_INT,
       .id       = "timeout",
-      .name     = N_("Timeout (sec) (0=infinite)"),
-      .desc     = N_("The number of seconds to wait for a stream to "
-                     "start."),
+      .name     = N_("Data timeout (sec) (0=infinite)"),
+      .desc     = N_("The number of seconds to wait for data. "
+                     "It handles the situations where no data "
+                     "are received at start or the input stream "
+                     "is stalled."),
       .off      = offsetof(profile_t, pro_timeout),
       .def.i    = 5,
       .group    = 1
@@ -724,16 +727,15 @@ profile_input_queue(void *opaque, streaming_message_t *sm)
   profile_sharer_message_t *psm = malloc(sizeof(*psm));
   psm->psm_prch = prch;
   psm->psm_sm = sm;
-  pthread_mutex_lock(&prsh->prsh_queue_mutex);
+  tvh_mutex_lock(&prsh->prsh_queue_mutex);
   if (prsh->prsh_queue_run) {
-    if (TAILQ_FIRST(&prsh->prsh_queue))
-      tvh_cond_signal(&prsh->prsh_queue_cond, 0);
     TAILQ_INSERT_TAIL(&prsh->prsh_queue, psm, psm_link);
+    tvh_cond_signal(&prsh->prsh_queue_cond, 0);
   } else {
     streaming_msg_free(sm);
     free(psm);
   }
-  pthread_mutex_unlock(&prsh->prsh_queue_mutex);
+  tvh_mutex_unlock(&prsh->prsh_queue_mutex);
 }
 
 static htsmsg_t *
@@ -863,11 +865,9 @@ profile_sharer_find(profile_chain_t *prch)
   if (!prsh) {
     prsh = calloc(1, sizeof(*prsh));
     prsh->prsh_do_queue = do_queue;
-    if (do_queue) {
-      pthread_mutex_init(&prsh->prsh_queue_mutex, NULL);
-      tvh_cond_init(&prsh->prsh_queue_cond);
-      TAILQ_INIT(&prsh->prsh_queue);
-    }
+    tvh_mutex_init(&prsh->prsh_queue_mutex, NULL);
+    tvh_cond_init(&prsh->prsh_queue_cond, 1);
+    TAILQ_INIT(&prsh->prsh_queue);
     streaming_target_init(&prsh->prsh_input, &profile_sharer_input_ops, prsh, 0);
     LIST_INIT(&prsh->prsh_chains);
   }
@@ -885,7 +885,7 @@ profile_sharer_thread(void *aux)
   int run = 1;
 
   while (run) {
-    pthread_mutex_lock(&prsh->prsh_queue_mutex);
+    tvh_mutex_lock(&prsh->prsh_queue_mutex);
     run = prsh->prsh_queue_run;
     psm = TAILQ_FIRST(&prsh->prsh_queue);
     if (run && psm == NULL) {
@@ -900,7 +900,7 @@ profile_sharer_thread(void *aux)
         free(psm);
       }
     }
-    pthread_mutex_unlock(&prsh->prsh_queue_mutex);
+    tvh_mutex_unlock(&prsh->prsh_queue_mutex);
   }
   return NULL;
 }
@@ -918,8 +918,8 @@ profile_sharer_postinit(profile_sharer_t *prsh)
   if (prsh->prsh_queue_run)
     return 0;
   prsh->prsh_queue_run = 1;
-  r = tvhthread_create(&prsh->prsh_queue_thread, NULL,
-                       profile_sharer_thread, prsh, "sharer");
+  r = tvh_thread_create(&prsh->prsh_queue_thread, NULL,
+                        profile_sharer_thread, prsh, "sharer");
   if (r) {
     prsh->prsh_queue_run = 0;
     tvherror(LS_PROFILE, "unable to create sharer thread");
@@ -936,13 +936,13 @@ profile_sharer_create(profile_sharer_t *prsh,
                       streaming_target_t *dst)
 {
   prch->prch_post_share = dst;
-  pthread_mutex_lock(&prsh->prsh_queue_mutex);
+  tvh_mutex_lock(&prsh->prsh_queue_mutex);
   prch->prch_ts_delta = LIST_EMPTY(&prsh->prsh_chains) ? 0 : PTS_UNSET;
   LIST_INSERT_HEAD(&prsh->prsh_chains, prch, prch_sharer_link);
   prch->prch_sharer = prsh;
   if (!prsh->prsh_master)
     prsh->prsh_master = prch;
-  pthread_mutex_unlock(&prsh->prsh_queue_mutex);
+  tvh_mutex_unlock(&prsh->prsh_queue_mutex);
   return 0;
 }
 
@@ -958,7 +958,7 @@ profile_sharer_destroy(profile_chain_t *prch)
 
   if (prsh == NULL)
     return;
-  pthread_mutex_lock(&prsh->prsh_queue_mutex);
+  tvh_mutex_lock(&prsh->prsh_queue_mutex);
   LIST_REMOVE(prch, prch_sharer_link);
   if (LIST_EMPTY(&prsh->prsh_chains)) {
     if ((run = prsh->prsh_queue_run) != 0) {
@@ -968,7 +968,7 @@ profile_sharer_destroy(profile_chain_t *prch)
     prch->prch_sharer = NULL;
     prch->prch_post_share = NULL;
   }
-  pthread_mutex_unlock(&prsh->prsh_queue_mutex);
+  tvh_mutex_unlock(&prsh->prsh_queue_mutex);
   if (run) {
     pthread_join(prsh->prsh_queue_thread, NULL);
     while ((psm = TAILQ_FIRST(&prsh->prsh_queue)) != NULL) {
@@ -987,7 +987,7 @@ profile_sharer_destroy(profile_chain_t *prch)
     free(prsh);
   } else {
     if (prsh->prsh_queue_run) {
-      pthread_mutex_lock(&prsh->prsh_queue_mutex);
+      tvh_mutex_lock(&prsh->prsh_queue_mutex);
       for (psm = TAILQ_FIRST(&prsh->prsh_queue); psm; psm = psm2) {
         psm2 = TAILQ_NEXT(psm, psm_link);
         if (psm->psm_prch != prch) continue;
@@ -1003,14 +1003,14 @@ profile_sharer_destroy(profile_chain_t *prch)
       prch->prch_post_share = NULL;
       if (prsh->prsh_master == prch)
         prsh->prsh_master = NULL;
-      pthread_mutex_unlock(&prsh->prsh_queue_mutex);
+      tvh_mutex_unlock(&prsh->prsh_queue_mutex);
     } else {
-      pthread_mutex_lock(&prsh->prsh_queue_mutex);
+      tvh_mutex_lock(&prsh->prsh_queue_mutex);
       prch->prch_sharer = NULL;
       prch->prch_post_share = NULL;
       if (prsh->prsh_master == prch)
         prsh->prsh_master = NULL;
-      pthread_mutex_unlock(&prsh->prsh_queue_mutex);
+      tvh_mutex_unlock(&prsh->prsh_queue_mutex);
     }
   }
 }
@@ -1019,15 +1019,17 @@ profile_sharer_destroy(profile_chain_t *prch)
  *
  */
 void
-profile_chain_init(profile_chain_t *prch, profile_t *pro, void *id)
+profile_chain_init(profile_chain_t *prch, profile_t *pro, void *id, int queue)
 {
   memset(prch, 0, sizeof(*prch));
   if (pro)
     profile_grab(pro);
   prch->prch_pro = pro;
   prch->prch_id  = id;
-  streaming_queue_init(&prch->prch_sq, 0, 0);
-  prch->prch_sq_used = 1;
+  if (queue) {
+    streaming_queue_init(&prch->prch_sq, 0, 0);
+    prch->prch_sq_used = 1;
+  }
   LIST_INSERT_HEAD(&profile_chains, prch, prch_link);
   prch->prch_linked = 1;
   prch->prch_stop = 1;
@@ -1101,7 +1103,7 @@ profile_chain_raw_open(profile_chain_t *prch, void *id, size_t qsize, int muxer)
  *
  */
 
-const static int prio2weight[] = {
+static const int prio2weight[] = {
   [PROFILE_SPRIO_DVR_IMPORTANT]   = 525,
   [PROFILE_SPRIO_DVR_HIGH]        = 425,
   [PROFILE_SPRIO_DVR_NORMAL]      = 325,
@@ -1141,6 +1143,9 @@ int profile_chain_weight(profile_chain_t *prch, int custom)
 void
 profile_chain_close(profile_chain_t *prch)
 {
+  if (prch == NULL)
+    return;
+
   profile_sharer_destroy(prch);
 
 #if ENABLE_TIMESHIFT
@@ -1254,6 +1259,7 @@ typedef struct profile_mpegts {
   int pro_rewrite_pmt;
   int pro_rewrite_pat;
   int pro_rewrite_sdt;
+  int pro_rewrite_nit;
   int pro_rewrite_eit;
 } profile_mpegts_t;
 
@@ -1267,6 +1273,7 @@ profile_pass_rewrite_sid_set (void *in, const void *v)
       pro->pro_rewrite_pmt =
       pro->pro_rewrite_pat =
       pro->pro_rewrite_sdt =
+      pro->pro_rewrite_nit =
       pro->pro_rewrite_eit = 1;
     }
     pro->pro_rewrite_sid = *val;
@@ -1307,6 +1314,12 @@ profile_pass_rewrite_sdt_set (void *in, const void *v)
 }
 
 static int
+profile_pass_rewrite_nit_set (void *in, const void *v)
+{
+  return profile_pass_int_set(in, v, &((profile_mpegts_t *)in)->pro_rewrite_nit);
+}
+
+static int
 profile_pass_rewrite_eit_set (void *in, const void *v)
 {
   return profile_pass_int_set(in, v, &((profile_mpegts_t *)in)->pro_rewrite_eit);
@@ -1334,7 +1347,7 @@ const idclass_t profile_mpegts_pass_class =
       .id       = "sid",
       .name     = N_("Rewrite Service ID"),
       .desc     = N_("Rewrite service identifier (SID) using the specified "
-                     "value (usually 1)."),
+                     "value (usually 1). Zero means no rewrite."),
       .off      = offsetof(profile_mpegts_t, pro_rewrite_sid),
       .set      = profile_pass_rewrite_sid_set,
       .opts     = PO_EXPERT,
@@ -1347,7 +1360,9 @@ const idclass_t profile_mpegts_pass_class =
       .name     = N_("Rewrite PMT"),
       .desc     = N_("Rewrite PMT (Program Map Table) packets to only "
                      "include information about the currently-streamed "
-                     "service."),
+                     "service. "
+                     "Rewrite can be unset only if 'Rewrite Service ID' "
+                     "is set to zero."),
       .off      = offsetof(profile_mpegts_t, pro_rewrite_pmt),
       .set      = profile_pass_rewrite_pmt_set,
       .opts     = PO_EXPERT,
@@ -1360,7 +1375,9 @@ const idclass_t profile_mpegts_pass_class =
       .name     = N_("Rewrite PAT"),
       .desc     = N_("Rewrite PAT (Program Association Table) packets "
                      "to only include information about the currently-"
-                     "streamed service."),
+                     "streamed service. "
+                     "Rewrite can be unset only if 'Rewrite Service ID' "
+                     "is set to zero."),
       .off      = offsetof(profile_mpegts_t, pro_rewrite_pat),
       .set      = profile_pass_rewrite_pat_set,
       .opts     = PO_EXPERT,
@@ -1373,9 +1390,26 @@ const idclass_t profile_mpegts_pass_class =
       .name     = N_("Rewrite SDT"),
       .desc     = N_("Rewrite SDT (Service Description Table) packets "
                      "to only include information about the currently-"
-                     "streamed service."),
+                     "streamed service. "
+                     "Rewrite can be unset only if 'Rewrite Service ID' "
+                     "is set to zero."),
       .off      = offsetof(profile_mpegts_t, pro_rewrite_sdt),
       .set      = profile_pass_rewrite_sdt_set,
+      .opts     = PO_EXPERT,
+      .def.i    = 1,
+      .group    = 2
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "rewrite_nit",
+      .name     = N_("Rewrite NIT"),
+      .desc     = N_("Rewrite NIT (Network Information Table) packets "
+                     "to only include information about the currently-"
+                     "streamed service. "
+                     "Rewrite can be unset only if 'Rewrite Service ID' "
+                     "is set to zero."),
+      .off      = offsetof(profile_mpegts_t, pro_rewrite_nit),
+      .set      = profile_pass_rewrite_nit_set,
       .opts     = PO_EXPERT,
       .def.i    = 1,
       .group    = 2
@@ -1386,7 +1420,9 @@ const idclass_t profile_mpegts_pass_class =
       .name     = N_("Rewrite EIT"),
       .desc     = N_("Rewrite EIT (Event Information Table) packets "
                      "to only include information about the currently-"
-                     "streamed service."),
+                     "streamed service. "
+                     "Rewrite can be unset only if 'Rewrite Service ID' "
+                     "is set to zero."),
       .off      = offsetof(profile_mpegts_t, pro_rewrite_eit),
       .set      = profile_pass_rewrite_eit_set,
       .opts     = PO_EXPERT,
@@ -1415,6 +1451,7 @@ profile_mpegts_pass_reopen(profile_chain_t *prch,
   c.u.pass.m_rewrite_pat = pro->pro_rewrite_pat;
   c.u.pass.m_rewrite_pmt = pro->pro_rewrite_pmt;
   c.u.pass.m_rewrite_sdt = pro->pro_rewrite_sdt;
+  c.u.pass.m_rewrite_nit = pro->pro_rewrite_nit;
   c.u.pass.m_rewrite_eit = pro->pro_rewrite_eit;
 
   assert(!prch->prch_muxer);
@@ -1449,6 +1486,7 @@ profile_mpegts_pass_builder(void)
   pro->pro_rewrite_pat = 1;
   pro->pro_rewrite_pmt = 1;
   pro->pro_rewrite_sdt = 1;
+  pro->pro_rewrite_nit = 1;
   pro->pro_rewrite_eit = 1;
   return (profile_t *)pro;
 }
@@ -1544,6 +1582,7 @@ profile_mpegts_spawn_reopen(profile_chain_t *prch,
   c.u.pass.m_rewrite_pat = 1;
   c.u.pass.m_rewrite_pmt = 1;
   c.u.pass.m_rewrite_sdt = 1;
+  c.u.pass.m_rewrite_nit = 1;
   c.u.pass.m_rewrite_eit = 1;
   mystrset(&c.u.pass.m_cmdline, pro->pro_cmdline);
   mystrset(&c.u.pass.m_mime, pro->pro_mime);
@@ -2532,7 +2571,7 @@ profile_init(void)
     HTSMSG_FOREACH(f, c) {
       if (!(e = htsmsg_field_get_map(f)))
         continue;
-      (void)profile_create(f->hmf_name, e, 0);
+      (void)profile_create(htsmsg_field_name(f), e, 0);
     }
     htsmsg_destroy(c);
   }
@@ -2602,7 +2641,7 @@ profile_done(void)
   profile_t *pro;
   profile_build_t *pb;
 
-  pthread_mutex_lock(&global_lock);
+  tvh_mutex_lock(&global_lock);
   profile_default = NULL;
   while ((pro = TAILQ_FIRST(&profiles)) != NULL)
     profile_delete(pro, 0);
@@ -2610,5 +2649,5 @@ profile_done(void)
     LIST_REMOVE(pb, link);
     free(pb);
   }
-  pthread_mutex_unlock(&global_lock);
+  tvh_mutex_unlock(&global_lock);
 }

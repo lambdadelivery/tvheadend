@@ -21,7 +21,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <pthread.h>
 #include <signal.h>
 #include <setjmp.h>
 
@@ -252,12 +251,12 @@ void epg_done ( void )
 {
   channel_t *ch;
 
-  pthread_mutex_lock(&global_lock);
+  tvh_mutex_lock(&global_lock);
   CHANNEL_FOREACH(ch)
     epg_channel_unlink(ch);
   epg_skel_done();
   memoryinfo_unregister(&epg_memoryinfo_broadcasts);
-  pthread_mutex_unlock(&global_lock);
+  tvh_mutex_unlock(&global_lock);
 }
 
 /* **************************************************************************
@@ -296,7 +295,7 @@ static int _epg_write_sect ( sbuf_t *sb, const char *sect )
 
 static void epg_save_tsk_callback ( void *p, int dearmed )
 {
-  char tmppath[PATH_MAX];
+  char tmppath[PATH_MAX+4];
   char path[PATH_MAX];
   sbuf_t *sb = p;
   size_t size = sb->sb_ptr, orig;

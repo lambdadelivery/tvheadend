@@ -19,9 +19,12 @@
 #ifndef MUXER_H_
 #define MUXER_H_
 
+#include "streaming.h"
 #include "htsmsg.h"
 
 #define MC_IS_EOS_ERROR(e) ((e) == EPIPE || (e) == ECONNRESET)
+
+#define MC_CAP_ANOTHER_SERVICE (1<<0)	/* I can stream another service (SID must match!) */
 
 typedef enum {
   MC_UNKNOWN     = 0,
@@ -71,6 +74,7 @@ typedef struct muxer_config {
       int              m_rewrite_pat;
       int              m_rewrite_pmt;
       int              m_rewrite_sdt;
+      int              m_rewrite_nit;
       int              m_rewrite_eit;
       char            *m_cmdline;
       char            *m_mime;
@@ -118,6 +122,7 @@ typedef struct muxer {
 
   int                    m_eos;        /* End of stream */
   int                    m_errors;     /* Number of errors */
+  int                    m_caps;       /* Capabilities */
   muxer_config_t         m_config;     /* general configuration */
   muxer_hints_t         *m_hints;      /* other hints */
 } muxer_t;

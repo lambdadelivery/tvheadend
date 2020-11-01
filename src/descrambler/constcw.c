@@ -133,7 +133,7 @@ constcw_service_start(caclient_t *cac, service_t *t)
   if (mt->s_dvb_forcecaid && mt->s_dvb_forcecaid != ccw->ccw_caid)
     return;
 
-  if (mt->s_dvb_service_id != ccw->ccw_sid)
+  if (service_id16(mt) != ccw->ccw_sid)
     return;
 
   if (mt->s_dvb_mux->mm_tsid != ccw->ccw_tsid)
@@ -146,8 +146,8 @@ constcw_service_start(caclient_t *cac, service_t *t)
     return;
 
   if (!mt->s_dvb_forcecaid) {
-    pthread_mutex_lock(&t->s_stream_mutex);
-    TAILQ_FOREACH(st, &t->s_filt_components, es_filt_link) {
+    tvh_mutex_lock(&t->s_stream_mutex);
+    TAILQ_FOREACH(st, &t->s_components.set_filter, es_filter_link) {
       LIST_FOREACH(c, &st->es_caids, link) {
         if (c->use && c->caid == ccw->ccw_caid &&
             c->providerid == ccw->ccw_providerid)
@@ -155,7 +155,7 @@ constcw_service_start(caclient_t *cac, service_t *t)
       }
       if (c) break;
     }
-    pthread_mutex_unlock(&t->s_stream_mutex);
+    tvh_mutex_unlock(&t->s_stream_mutex);
     if (st == NULL)
       return;
   }
@@ -187,9 +187,9 @@ constcw_free(caclient_t *cac)
 
   while((ct = LIST_FIRST(&ccw->ccw_services)) != NULL) {
     service_t *t = ct->td_service;
-    pthread_mutex_lock(&t->s_stream_mutex);
+    tvh_mutex_lock(&t->s_stream_mutex);
     constcw_service_destroy((th_descrambler_t *)ct);
-    pthread_mutex_unlock(&t->s_stream_mutex);
+    tvh_mutex_unlock(&t->s_stream_mutex);
   }
 }
 

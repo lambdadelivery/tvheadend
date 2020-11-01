@@ -88,6 +88,14 @@ typedef struct http_arg {
 #define HTTP_STATUS_HTTP_VERSION    505
 #define HTTP_STATUS_OP_NOT_SUPPRT   551
 
+#define HTTP_AUTH_PLAIN             0
+#define HTTP_AUTH_DIGEST            1
+#define HTTP_AUTH_PLAIN_DIGEST      2
+
+#define HTTP_AUTH_ALGO_MD5          0
+#define HTTP_AUTH_ALGO_SHA256       1
+#define HTTP_AUTH_ALGO_SHA512_256   2
+
 typedef enum http_state {
   HTTP_CON_WAIT_REQUEST,
   HTTP_CON_READ_HEADER,
@@ -140,7 +148,7 @@ typedef struct http_connection {
   struct sockaddr_storage *hc_proxy_ip;
   struct sockaddr_storage *hc_local_ip;
 
-  pthread_mutex_t  *hc_paths_mutex;
+  tvh_mutex_t *hc_paths_mutex;
   http_path_list_t *hc_paths;
   int (*hc_process)(struct http_connection *hc, htsbuf_queue_t *spill);
 
@@ -150,7 +158,7 @@ typedef struct http_connection {
   htsbuf_queue_t  hc_reply;
 
   int             hc_extra_insend;
-  pthread_mutex_t hc_extra_lock;
+  tvh_mutex_t     hc_extra_lock;
   int             hc_extra_chunks;
   htsbuf_queue_t  hc_extra;
 
@@ -167,6 +175,14 @@ typedef struct http_connection {
   char *hc_authhdr;
   char *hc_nonce;
   access_t *hc_access;
+  enum {
+    HC_AUTH_NONE,
+    HC_AUTH_ADDR,
+    HC_AUTH_PLAIN,
+    HC_AUTH_DIGEST,
+    HC_AUTH_TICKET,
+    HC_AUTH_PERM
+  } hc_auth_type;
 
   /* RTSP */
   uint64_t hc_cseq;
@@ -210,6 +226,10 @@ char *http_arg_get_query(http_arg_list_t *list);
 static inline int http_args_empty(const http_arg_list_t *list) { return TAILQ_EMPTY(list); }
 
 int http_tokenize(char *buf, char **vec, int vecsize, int delimiter);
+
+const char * http_username(http_connection_t *hc);
+
+int http_noaccess_code(http_connection_t *hc);
 
 void http_alive(http_connection_t *hc);
 
@@ -310,7 +330,7 @@ int http_access_verify_channel(http_connection_t *hc, int mask,
 
 void http_parse_args(http_arg_list_t *list, char *args);
 
-char *http_get_hostpath(http_connection_t *hc);
+char *http_get_hostpath(http_connection_t *hc, char *buf, size_t buflen);
 
 /*
  * HTTP/RTSP Client
@@ -334,7 +354,7 @@ struct http_client {
 
   TAILQ_ENTRY(http_client) hc_link;
 
-  pthread_mutex_t hc_mutex;
+  tvh_mutex_t  hc_mutex;
 
   int          hc_id;
   int          hc_fd;
@@ -427,8 +447,10 @@ struct http_client {
   void    (*hc_conn_closed)  (http_client_t *hc, int err);
 };
 
-void http_client_init ( const char *user_agent );
+void http_client_init ( void );
 void http_client_done ( void );
+
+const char * http_client_con2str(http_state_t state);
 
 http_client_t*
 http_client_connect ( void *aux, http_ver_t ver, const char *scheme,

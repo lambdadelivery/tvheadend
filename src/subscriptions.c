@@ -16,24 +16,10 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <assert.h>
-#include <pthread.h>
-
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/ioctl.h>
-#include <fcntl.h>
-#include <errno.h>
-
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include "tvheadend.h"
 #include "subscriptions.h"
 #include "streaming.h"
+#include "parsers/parsers.h"
 #include "channels.h"
 #include "service.h"
 #include "profile.h"
@@ -87,23 +73,27 @@ static void
 subscription_link_service(th_subscription_t *s, service_t *t)
 {
   streaming_message_t *sm;
+  streaming_start_t *ss;
+
   subsetstate(s, SUBSCRIPTION_TESTING_SERVICE);
- 
   s->ths_service = t;
+
+  if ((s->ths_flags & SUBSCRIPTION_TYPE_MASK) == SUBSCRIPTION_PACKET) {
+    assert(s->ths_parser == NULL);
+    s->ths_output = s->ths_parser = parser_create(s->ths_output, s);
+  }
+
   LIST_INSERT_HEAD(&t->s_subscriptions, s, ths_service_link);
 
   tvhtrace(LS_SUBSCRIPTION, "%04X: linking sub %p to svc %p type %i",
            shortid(s), s, t, t->s_type);
 
-  pthread_mutex_lock(&t->s_stream_mutex);
+  tvh_mutex_lock(&t->s_stream_mutex);
 
-  if(TAILQ_FIRST(&t->s_filt_components) != NULL ||
-     t->s_type != STYPE_STD) {
-
+  if(elementary_set_has_streams(&t->s_components, 1) || t->s_type != STYPE_STD) {
     streaming_msg_free(s->ths_start_message);
-
-    s->ths_start_message =
-      streaming_msg_create_data(SMT_START, service_build_stream_start(t));
+    ss = service_build_streaming_start(t);
+    s->ths_start_message = streaming_msg_create_data(SMT_START, ss);
   }
 
   // Link to service output
@@ -127,7 +117,7 @@ subscription_link_service(th_subscription_t *s, service_t *t)
     streaming_target_deliver(s->ths_output, sm);
   }
 
-  pthread_mutex_unlock(&t->s_stream_mutex);
+  tvh_mutex_unlock(&t->s_stream_mutex);
 }
 
 /**
@@ -143,7 +133,7 @@ subscription_unlink_service0(th_subscription_t *s, int reason, int resched)
   if (!s->ths_current_instance) goto stop;
   s->ths_current_instance = NULL;
 
-  pthread_mutex_lock(&t->s_stream_mutex);
+  tvh_mutex_lock(&t->s_stream_mutex);
 
   streaming_target_disconnect(&t->s_streaming_pad, &s->ths_input);
 
@@ -154,9 +144,17 @@ subscription_unlink_service0(th_subscription_t *s, int reason, int resched)
     t->s_running = 0;
   }
 
-  pthread_mutex_unlock(&t->s_stream_mutex);
+  if (s->ths_parser)
+    s->ths_output = parser_output(s->ths_parser);
+
+  tvh_mutex_unlock(&t->s_stream_mutex);
 
   LIST_REMOVE(s, ths_service_link);
+
+  if (s->ths_parser) {
+    parser_destroy(s->ths_parser);
+    s->ths_parser = NULL;
+  }
 
   if (!resched && (s->ths_flags & SUBSCRIPTION_ONESHOT) != 0)
     mtimer_arm_rel(&s->ths_remove_timer, subscription_unsubscribe_cb, s, 0);
@@ -303,11 +301,11 @@ subscription_ca_check_cb(void *aux)
   if (t == NULL)
     return;
 
-  pthread_mutex_lock(&t->s_stream_mutex);
+  tvh_mutex_lock(&t->s_stream_mutex);
 
   service_set_streaming_status_flags(t, TSS_CA_CHECK);
 
-  pthread_mutex_unlock(&t->s_stream_mutex);
+  tvh_mutex_unlock(&t->s_stream_mutex);
 }
 
 /**
@@ -388,10 +386,10 @@ subscription_reschedule(void)
       tvhwarn(LS_SUBSCRIPTION, "%04X: service instance is bad, reason: %s",
               shortid(s), streaming_code2txt(s->ths_testing_error));
 
-      pthread_mutex_lock(&t->s_stream_mutex);
+      tvh_mutex_lock(&t->s_stream_mutex);
       t->s_streaming_status = 0;
       t->s_status = SERVICE_IDLE;
-      pthread_mutex_unlock(&t->s_stream_mutex);
+      tvh_mutex_unlock(&t->s_stream_mutex);
 
       si = s->ths_current_instance;
       assert(si != NULL);
@@ -412,7 +410,9 @@ subscription_reschedule(void)
     s->ths_current_instance = si;
 
     if(si == NULL) {
-      if (s->ths_last_error != error || s->ths_last_find + sec2mono(2) >= mclk()) {
+      if (s->ths_last_error != error ||
+          s->ths_last_find + sec2mono(2) >= mclk() ||
+          error == SM_CODE_TUNING_FAILED) {
         tvhtrace(LS_SUBSCRIPTION, "%04X: instance not available, retrying", shortid(s));
         if (s->ths_last_error != error)
           s->ths_last_find = mclk();
@@ -478,7 +478,7 @@ subscription_set_postpone(void *aux, const char *path, int64_t postpone)
   /* some limits that make sense */
   postpone = MINMAX(postpone, 0, 120);
   postpone2 = sec2mono(postpone);
-  pthread_mutex_lock(&global_lock);
+  tvh_mutex_lock(&global_lock);
   if (subscription_postpone != postpone) {
     subscription_postpone = postpone;
     tvhinfo(LS_SUBSCRIPTION, "postpone set to %"PRId64" seconds", postpone);
@@ -489,7 +489,7 @@ subscription_set_postpone(void *aux, const char *path, int64_t postpone)
     }
     subscription_delayed_reschedule(0);
   }
-  pthread_mutex_unlock(&global_lock);
+  tvh_mutex_unlock(&global_lock);
   return postpone;
 }
 
@@ -740,6 +740,11 @@ subscription_unsubscribe(th_subscription_t *s, int flags)
   mtimer_disarm(&s->ths_remove_timer);
   mtimer_disarm(&s->ths_ca_check_timer);
 
+  if (s->ths_parser) {
+    parser_destroy(s->ths_parser);
+    s->ths_parser = NULL;
+  }
+
   if ((flags & UNSUBSCRIBE_FINAL) != 0 ||
       (s->ths_flags & SUBSCRIPTION_ONESHOT) != 0)
     subscription_destroy(s);
@@ -764,24 +769,9 @@ subscription_create
   th_subscription_t *s = calloc(1, sizeof(th_subscription_t));
   profile_t *pro = prch ? prch->prch_pro : NULL;
   streaming_target_t *st = prch ? prch->prch_st : NULL;
-  int reject = 0;
   static int tally;
 
   TAILQ_INIT(&s->ths_instances);
-
-  switch (flags & SUBSCRIPTION_TYPE_MASK) {
-  case SUBSCRIPTION_NONE:
-    reject |= SMT_TO_MASK(SMT_PACKET) | SMT_TO_MASK(SMT_MPEGTS);
-    break;
-  case SUBSCRIPTION_MPEGTS:
-    reject |= SMT_TO_MASK(SMT_PACKET);  // Reject parsed frames
-    break;
-  case SUBSCRIPTION_PACKET:
-    reject |= SMT_TO_MASK(SMT_MPEGTS);  // Reject raw mpegts
-    break;
-  default:
-    abort();
-  }
 
   if (!ops) ops = &subscription_input_direct_ops;
   if (!st) {
@@ -789,7 +779,7 @@ subscription_create
     streaming_target_init(st, &subscription_input_null_ops, s, 0);
   }
 
-  streaming_target_init(&s->ths_input, ops, s, reject);
+  streaming_target_init(&s->ths_input, ops, s, 0);
 
   s->ths_prch              = prch && prch->prch_st ? prch : NULL;
   s->ths_title             = strdup(name);
@@ -911,7 +901,7 @@ subscription_create_from_channel(profile_chain_t *prch,
 				 const char *client,
 				 int *error)
 {
-  assert(prch->prch_st);
+  assert(flags == SUBSCRIPTION_NONE || prch->prch_st);
   return subscription_create_from_channel_or_service
            (prch, ti, weight, name, flags, hostname, username, client,
             error, NULL);
@@ -931,7 +921,7 @@ subscription_create_from_service(profile_chain_t *prch,
 				 const char *client,
 				 int *error)
 {
-  assert(prch->prch_st);
+  assert(flags == SUBSCRIPTION_NONE || prch->prch_st);
   return subscription_create_from_channel_or_service
            (prch, ti, weight, name, flags, hostname, username, client,
             error, prch->prch_id);
@@ -1015,6 +1005,8 @@ subscription_create_msg(th_subscription_t *s, const char *lang)
   profile_t *pro;
   char buf[284];
   const char *state;
+  htsmsg_t *l;
+  mpegts_apids_t *pids = NULL;
 
   htsmsg_add_u32(m, "id", s->ths_id);
   htsmsg_add_u32(m, "start", s->ths_start);
@@ -1040,25 +1032,26 @@ subscription_create_msg(th_subscription_t *s, const char *lang)
 
   htsmsg_add_str(m, "state", lang ? tvh_gettext_lang(lang, state) : state);
 
-  if(s->ths_hostname != NULL)
+  if (s->ths_hostname != NULL)
     htsmsg_add_str(m, "hostname", s->ths_hostname);
 
-  if(s->ths_username != NULL)
+  if (s->ths_username != NULL)
     htsmsg_add_str(m, "username", s->ths_username);
 
-  if(s->ths_client != NULL)
-    htsmsg_add_str(m, "title", s->ths_client);
-  else if(s->ths_title != NULL)
+  if (s->ths_client != NULL)
+    htsmsg_add_str(m, "client", s->ths_client);
+
+  if (s->ths_title != NULL)
     htsmsg_add_str(m, "title", s->ths_title);
   
-  if(s->ths_channel != NULL)
+  if (s->ths_channel != NULL)
     htsmsg_add_str(m, "channel", channel_get_name(s->ths_channel, tvh_gettext_lang(lang, channel_blank_name)));
   
-  if((t = s->ths_service) != NULL) {
+  if ((t = s->ths_service) != NULL) {
     htsmsg_add_str(m, "service", service_adapter_nicename(t, buf, sizeof(buf)));
 
-    pthread_mutex_lock(&t->s_stream_mutex);
-    if ((di = s->ths_service->s_descramble_info) != NULL) {
+    tvh_mutex_lock(&t->s_stream_mutex);
+    if ((di = t->s_descramble_info) != NULL) {
       if (di->caid == 0 && di->ecmtime == 0) {
         snprintf(buf, sizeof(buf), N_("Failed"));
       } else {
@@ -1068,7 +1061,24 @@ subscription_create_msg(th_subscription_t *s, const char *lang)
       }
       htsmsg_add_str(m, "descramble", buf);
     }
-    pthread_mutex_unlock(&t->s_stream_mutex);
+    tvh_mutex_unlock(&t->s_stream_mutex);
+
+    if (t->s_pid_list) {
+      pids = t->s_pid_list(t);
+      if (pids) {
+        l = htsmsg_create_list();
+        if (pids->all) {
+          htsmsg_add_u32(l, NULL, 65535);
+        } else {
+          int i;
+          for (i = 0; i < pids->count; i++) {
+            htsmsg_add_u32(l, NULL, pids->pids[i].pid);
+          }
+        }
+        htsmsg_add_msg(m, "pids", l);
+        mpegts_pid_destroy(&pids);
+      }
+    }
 
     if (s->ths_prch != NULL) {
       pro = s->ths_prch->prch_pro;
@@ -1077,8 +1087,9 @@ subscription_create_msg(th_subscription_t *s, const char *lang)
                        idnode_get_title(&pro->pro_id, lang, buf, sizeof(buf)));
     }
 
-  } else if(s->ths_dvrfile != NULL)
+  } else if (s->ths_dvrfile != NULL) {
     htsmsg_add_str(m, "service", s->ths_dvrfile ?: "");
+  }
 
   htsmsg_add_u32(m, "in", atomic_get(&s->ths_bytes_in_avg));
   htsmsg_add_u32(m, "out", atomic_get(&s->ths_bytes_out_avg));
@@ -1138,11 +1149,11 @@ subscription_init(void)
 void
 subscription_done(void)
 {
-  pthread_mutex_lock(&global_lock);
+  tvh_mutex_lock(&global_lock);
   mtimer_disarm(&subscription_status_timer);
   /* clear remaining subscriptions */
   subscription_reschedule();
-  pthread_mutex_unlock(&global_lock);
+  tvh_mutex_unlock(&global_lock);
   assert(LIST_FIRST(&subscriptions) == NULL);
 }
 
@@ -1198,13 +1209,13 @@ subscription_set_speed ( th_subscription_t *s, int speed )
 
   if (!t) return;
 
-  pthread_mutex_lock(&t->s_stream_mutex);
+  tvh_mutex_lock(&t->s_stream_mutex);
 
   sm = streaming_msg_create_code(SMT_SPEED, speed);
 
   streaming_target_deliver(s->ths_output, sm);
 
-  pthread_mutex_unlock(&t->s_stream_mutex);
+  tvh_mutex_unlock(&t->s_stream_mutex);
 }
 
 /**
@@ -1218,7 +1229,7 @@ subscription_set_skip ( th_subscription_t *s, const streaming_skip_t *skip )
 
   if (!t) return;
 
-  pthread_mutex_lock(&t->s_stream_mutex);
+  tvh_mutex_lock(&t->s_stream_mutex);
 
   sm = streaming_msg_create(SMT_SKIP);
   sm->sm_data = malloc(sizeof(streaming_skip_t));
@@ -1226,7 +1237,7 @@ subscription_set_skip ( th_subscription_t *s, const streaming_skip_t *skip )
 
   streaming_target_deliver(s->ths_output, sm);
 
-  pthread_mutex_unlock(&t->s_stream_mutex);
+  tvh_mutex_unlock(&t->s_stream_mutex);
 }
 
 /* **************************************************************************

@@ -72,7 +72,7 @@ tvh_codec_profile_load(htsmsg_field_t *config)
     const char *name = NULL;
 
     if ((conf = htsmsg_field_get_map(config)) &&
-        tvh_codec_profile_create(conf, config->hmf_name, 0)) {
+        tvh_codec_profile_create(conf, htsmsg_field_name(config), 0)) {
         tvherror(LS_CODEC, "unable to load codec profile: '%s'",
                  (name = htsmsg_get_str(conf, "name")) ? name : "<unknown>");
     }
@@ -185,7 +185,7 @@ tvh_codec_profile_get_name(TVHCodecProfile *self)
 const char *
 tvh_codec_profile_get_title(TVHCodecProfile *self)
 {
-    static char __thread profile_title[TVH_TITLE_LEN];
+    static __thread char profile_title[TVH_TITLE_LEN];
 
     memset(profile_title, 0, sizeof(profile_title));
     if (str_snprintf(profile_title, sizeof(profile_title),
@@ -226,7 +226,7 @@ tvh_codec_profile_is_copy(TVHCodecProfile *self, tvh_ssc_t *ssc)
         tvherror(LS_CODEC, "unknown type for profile '%s'", self->name);
         return -1;
     }
-    if (out_type == ssc->ssc_type) {
+    if (out_type == ssc->es_type) {
         idclass = (&self->idnode)->in_class;
         while (idclass) {
             codec_profile_class = (codec_profile_class_t *)idclass;

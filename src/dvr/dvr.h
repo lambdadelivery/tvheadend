@@ -28,6 +28,23 @@
 #include "lang_str.h"
 #include "tvhvfs.h"
 
+/**
+ *
+ */
+LIST_HEAD(dvr_config_list, dvr_config);
+LIST_HEAD(dvr_entry_list, dvr_entry);
+
+LIST_HEAD(dvr_autorec_entry_list, dvr_autorec_entry);
+LIST_HEAD(dvr_timerec_entry_list, dvr_timerec_entry);
+
+TAILQ_HEAD(dvr_autorec_entry_queue, dvr_autorec_entry);
+TAILQ_HEAD(dvr_timerec_entry_queue, dvr_timerec_entry);
+
+LIST_HEAD(dvr_vfs_list, dvr_vfs);
+
+/**
+ *
+ */
 #define DVR_MAX_DATA_ERRORS     (10000)
 
 #define DVR_FILESIZE_UPDATE     (1<<0)
@@ -59,9 +76,11 @@ typedef struct dvr_config {
   char *dvr_storage;
   int dvr_pri;
   int dvr_clone;
+  int dvr_complex_scheduling;
   uint32_t dvr_rerecord_errors;
   uint32_t dvr_retention_days;
   uint32_t dvr_removal_days;
+  uint32_t dvr_removal_after_playback;
   uint32_t dvr_autorec_max_count;
   uint32_t dvr_autorec_max_sched_count;
   char *dvr_charset;
@@ -76,6 +95,9 @@ typedef struct dvr_config {
   int dvr_running;
   uint32_t dvr_cleanup_threshold_free;
   uint32_t dvr_cleanup_threshold_used;
+  int dvr_fetch_artwork;
+  int dvr_fetch_artwork_allow_unknown;
+  char *dvr_fetch_artwork_options;
 
   muxer_config_t dvr_muxcnf;
 
@@ -179,6 +201,7 @@ typedef struct dvr_entry {
   char *de_channel_name;
 
   gtimer_t de_timer;
+  gtimer_t de_watched_timer;
   mtimer_t de_deferred_timer;
 
   /**
@@ -189,7 +212,8 @@ typedef struct dvr_entry {
   LIST_ENTRY(dvr_entry) de_config_link;
 
   int de_enabled;
-
+  time_t de_create;             ///< Time entry was created
+  time_t de_watched;            ///< Time entry was last watched
   time_t de_start;
   time_t de_stop;
 
@@ -207,6 +231,7 @@ typedef struct dvr_entry {
   char *de_comment;
   char *de_uri;                 /* Programme unique ID */
   char *de_image;               /* Programme Image */
+  char *de_fanart_image;        /* Programme fanart image */
   htsmsg_t *de_files; /* List of all used files */
   char *de_directory; /* Can be set for autorec entries, will override any 
                          directory setting from the configuration */
@@ -384,6 +409,10 @@ typedef struct dvr_autorec_entry {
 
   int dae_minduration;
   int dae_maxduration;
+  int dae_minyear;
+  int dae_maxyear;
+  int dae_minseason;
+  int dae_maxseason;
   uint32_t dae_retention;
   uint32_t dae_removal;
   uint32_t dae_btype;
@@ -396,8 +425,6 @@ typedef struct dvr_autorec_entry {
   int dae_record;
   
 } dvr_autorec_entry_t;
-
-TAILQ_HEAD(dvr_autorec_entry_queue, dvr_autorec_entry);
 
 extern struct dvr_autorec_entry_queue autorec_entries;
 
@@ -436,8 +463,6 @@ typedef struct dvr_timerec_entry {
   uint32_t dte_retention;
   uint32_t dte_removal;
 } dvr_timerec_entry_t;
-
-TAILQ_HEAD(dvr_timerec_entry_queue, dvr_timerec_entry);
 
 extern struct dvr_timerec_entry_queue timerec_entries;
 
@@ -498,6 +523,9 @@ static inline int dvr_entry_is_editable(dvr_entry_t *de)
 static inline int dvr_entry_is_valid(dvr_entry_t *de)
   { return de->de_refcnt > 0; }
 
+/// Does the user want fanart lookup for this entry?
+int dvr_entry_allow_fanart_lookup(const dvr_entry_t *de);
+
 static inline int dvr_entry_is_completed_ok(dvr_entry_t *de)
   { assert(de->de_sched_state == DVR_COMPLETED);
     return de->de_last_error == SM_CODE_OK ||
@@ -532,6 +560,9 @@ void dvr_entry_destroy_by_config(dvr_config_t *cfg, int delconf);
 
 int dvr_entry_set_state(dvr_entry_t *de, dvr_entry_sched_state_t state,
                         dvr_rs_state_t rec_state, int error_code);
+
+int dvr_entry_set_playcount(dvr_entry_t *de, uint32_t playcount);
+int dvr_entry_incr_playcount(dvr_entry_t *de);
 
 const char *dvr_entry_status(dvr_entry_t *de);
 
@@ -577,6 +608,7 @@ void dvr_event_removed(epg_broadcast_t *e);
 void dvr_event_updated(epg_broadcast_t *e);
 
 void dvr_event_running(epg_broadcast_t *e, epg_running_t running);
+int dvr_entry_assign_broadcast(dvr_entry_t *de, epg_broadcast_t *bcast);
 
 dvr_entry_t *dvr_entry_find_by_id(int id);
 
@@ -628,6 +660,8 @@ int dvr_entry_verify(dvr_entry_t *de, access_t *a, int readonly);
 void dvr_entry_changed(dvr_entry_t *de);
 
 void dvr_spawn_cmd(dvr_entry_t *de, const char *cmd, const char *filename, int pre);
+/// Spawn a fetch of artwork for the entry.
+void dvr_spawn_fetch_artwork(dvr_entry_t *de);
 
 void dvr_vfs_refresh_entry(dvr_entry_t *de);
 void dvr_vfs_remove_entry(dvr_entry_t *de);
@@ -668,7 +702,8 @@ htsmsg_t * dvr_autorec_entry_class_time_list(void *o, const char *null);
 htsmsg_t * dvr_autorec_entry_class_weekdays_get(uint32_t weekdays);
 htsmsg_t * dvr_autorec_entry_class_weekdays_list (void *o, const char *list);
 char * dvr_autorec_entry_class_weekdays_rend(uint32_t weekdays, const char *lang);
-const char *dvr_entry_class_image_url_get(const dvr_entry_t *o);
+const char *dvr_entry_get_image(const dvr_entry_t *o);
+const char *dvr_entry_get_fanart_image(const dvr_entry_t *o);
 
 void dvr_autorec_check_event(epg_broadcast_t *e);
 
@@ -685,6 +720,15 @@ void dvr_autorec_init(void);
 void dvr_autorec_done(void);
 
 void dvr_autorec_update(void);
+/* Check autorec timers after a short delay. */
+void dvr_autorec_async_reschedule(void);
+
+/* @return 1 if the event 'e' is matched by the autorec rule 'dae' */
+int dvr_autorec_cmp(dvr_autorec_entry_t *dae, epg_broadcast_t *e);
+/* Purge any autorec timers that are obsolete since they no longer match any events. */
+void dvr_autorec_purge_obsolete_timers(void);
+/* @return 1 if entry is an autorec and can be purged since it no longer matches its event. */
+int dvr_autorec_entry_can_be_purged(const dvr_entry_t *de);
 
 static inline int
   dvr_autorec_entry_verify(dvr_autorec_entry_t *dae, access_t *a, int readonly)
@@ -827,6 +871,5 @@ void dvr_init(void);
 void dvr_config_init(void);
 
 void dvr_done(void);
-
 
 #endif /* DVR_H  */

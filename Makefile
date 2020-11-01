@@ -2,7 +2,7 @@
 #  Tvheadend streaming server.
 #  Copyright (C) 2007-2009 Andreas Öman
 #  Copyright (C) 2012-2015 Adam Sutton
-#  Copyright (C) 2012-2017 Jaroslav Kysela
+#  Copyright (C) 2012-2018 Jaroslav Kysela
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -31,11 +31,12 @@ LANGUAGES ?= $(LANGUAGES_ALL)
 # Common compiler flags
 #
 
+# https://wiki.debian.org/Hardening
 CFLAGS  += -g
 ifeq ($(CONFIG_CCDEBUG),yes)
 CFLAGS  += -O0
 else
-CFLAGS  += -O2
+CFLAGS  += -O2 -D_FORTIFY_SOURCE=2
 endif
 ifeq ($(CONFIG_PIE),yes)
 CFLAGS  += -fPIE
@@ -51,6 +52,9 @@ endif
 CFLAGS  += -Wall -Wwrite-strings -Wno-deprecated-declarations
 CFLAGS  += -Wmissing-prototypes
 CFLAGS  += -fms-extensions -funsigned-char -fno-strict-aliasing
+ifeq ($(COMPILER), gcc)
+CFLAGS  += -Wno-stringop-truncation -Wno-stringop-overflow
+endif
 CFLAGS  += -D_FILE_OFFSET_BITS=64
 CFLAGS  += -I${BUILDDIR} -I${ROOTDIR}/src -I${ROOTDIR}
 ifeq ($(CONFIG_ANDROID),yes)
@@ -58,7 +62,10 @@ LDFLAGS += -ldl -lm
 else
 LDFLAGS += -ldl -lpthread -lm
 endif
-LDFLAGS += -pie -Wl,-z,now
+ifeq ($(CONFIG_PIE),yes)
+LDFLAGS += -pie
+endif
+LDFLAGS += -Wl,-z,now
 ifeq ($(CONFIG_LIBICONV),yes)
 LDFLAGS += -liconv
 endif
@@ -77,7 +84,7 @@ endif
 ifeq ($(COMPILER), clang)
 CFLAGS  += -Wno-microsoft -Qunused-arguments -Wno-unused-function
 CFLAGS  += -Wno-unused-value -Wno-tautological-constant-out-of-range-compare
-CFLAGS  += -Wno-parentheses-equality -Wno-incompatible-pointer-types
+CFLAGS  += -Wno-parentheses-equality
 endif
 
 
@@ -208,11 +215,13 @@ SRCS-1 = \
 	src/uuid.c \
 	src/main.c \
 	src/tvhlog.c \
+	src/tprofile.c \
 	src/idnode.c \
 	src/prop.c \
 	src/proplib.c \
 	src/utils.c \
 	src/wrappers.c \
+	src/tvh_thread.c \
 	src/tvhvfs.c \
 	src/access.c \
 	src/tcp.c \
@@ -226,6 +235,7 @@ SRCS-1 = \
 	src/epggrab.c\
 	src/spawn.c \
 	src/packet.c \
+	src/esstream.c \
 	src/streaming.c \
 	src/channels.c \
 	src/subscriptions.c \
@@ -313,6 +323,7 @@ SRCS-2 = \
 	src/api/api_wizard.c
 
 SRCS-2 += \
+        src/parsers/message.c \
 	src/parsers/parsers.c \
 	src/parsers/bitstream.c \
 	src/parsers/parser_h264.c \
@@ -381,10 +392,13 @@ SRCS-MPEGTS = \
 	src/input/mpegts/mpegts_table.c \
 	src/input/mpegts/dvb_support.c \
 	src/input/mpegts/dvb_charset.c \
+	src/input/mpegts/dvb_psi_pmt.c \
 	src/input/mpegts/dvb_psi.c \
 	src/input/mpegts/fastscan.c \
 	src/input/mpegts/mpegts_mux_sched.c \
-        src/input/mpegts/mpegts_network_scan.c
+        src/input/mpegts/mpegts_network_scan.c \
+        src/input/mpegts/mpegts_tsdebug.c \
+        src/descrambler/tsdebugcw.c
 SRCS-$(CONFIG_MPEGTS) += $(SRCS-MPEGTS)
 I18N-C += $(SRCS-MPEGTS)
 
@@ -473,6 +487,11 @@ SRCS-INOTIFY = \
 	src/dvr/dvr_inotify.c
 SRCS-${CONFIG_INOTIFY} += $(SRCS-INOTIFY)
 I18N-C += $(SRCS-INOTIFY)
+ifeq ($(CONFIG_INOTIFY), yes)
+ifeq ($(PLATFORM), freebsd)
+LDFLAGS += -linotify
+endif
+endif
 
 # Avahi
 SRCS-AVAHI = \
@@ -596,29 +615,6 @@ SRCS-DDCI = \
 SRCS-${CONFIG_DDCI} += $(SRCS-DDCI)
 I18N-C += $(SRCS-DDCI)
 
-# TSDEBUGCW
-SRCS-TSDEBUG = \
-	src/input/mpegts/mpegts_tsdebug.c \
-	src/descrambler/tsdebugcw.c
-SRCS-${CONFIG_TSDEBUG} += $(SRCS-TSDEBUG)
-I18N-C += $(SRCS-TSDEBUG)
-
-# FFdecsa
-ifneq ($(CONFIG_DVBCSA),yes)
-FFDECSA-$(CONFIG_CAPMT)   = yes
-FFDECSA-$(CONFIG_CWC)     = yes
-FFDECSA-$(CONFIG_CONSTCW) = yes
-endif
-
-ifeq ($(FFDECSA-yes),yes)
-SRCS-yes += src/descrambler/ffdecsa/ffdecsa_interface.c \
-	src/descrambler/ffdecsa/ffdecsa_int.c
-SRCS-${CONFIG_MMX}  += src/descrambler/ffdecsa/ffdecsa_mmx.c
-SRCS-${CONFIG_SSE2} += src/descrambler/ffdecsa/ffdecsa_sse2.c
-${BUILDDIR}/src/descrambler/ffdecsa/ffdecsa_mmx.o  : CFLAGS += -mmmx
-${BUILDDIR}/src/descrambler/ffdecsa/ffdecsa_sse2.o : CFLAGS += -msse2
-endif
-
 # crypto algorithms
 SRCS-${CONFIG_SSL} += src/descrambler/algo/libaesdec.c
 SRCS-${CONFIG_SSL} += src/descrambler/algo/libaes128dec.c
@@ -737,6 +733,7 @@ clean:
 .PHONY: distclean
 distclean: clean
 	rm -rf ${ROOTDIR}/build.*
+	rm -rf ${ROOTDIR}/debian/.debhelper
 	rm -rf ${ROOTDIR}/data/dvb-scan
 	rm -f ${ROOTDIR}/.config.mk
 
@@ -851,10 +848,13 @@ ${BUILDDIR}/libffmpeg_stamp: ${BUILDDIR}/ffmpeg/build/ffmpeg/lib/libavcodec.a
 	@touch $@
 
 ${BUILDDIR}/ffmpeg/build/ffmpeg/lib/libavcodec.a: Makefile.ffmpeg
-ifeq ($(CONFIG_BINTRAY_CACHE),yes)
+ifeq ($(CONFIG_PCLOUD_CACHE),yes)
 	$(MAKE) -f Makefile.ffmpeg libcacheget
+	$(MAKE) -f Makefile.ffmpeg build
+	$(MAKE) -f Makefile.ffmpeg libcacheput
+else
+	$(MAKE) -f Makefile.ffmpeg build
 endif
-	$(MAKE) -f Makefile.ffmpeg
 
 # Static HDHOMERUN library
 
@@ -866,10 +866,13 @@ ${BUILDDIR}/libhdhomerun_stamp: ${BUILDDIR}/hdhomerun/libhdhomerun/libhdhomerun.
 	@touch $@
 
 ${BUILDDIR}/hdhomerun/libhdhomerun/libhdhomerun.a: Makefile.hdhomerun
-ifeq ($(CONFIG_BINTRAY_CACHE),yes)
+ifeq ($(CONFIG_PCLOUD_CACHE),yes)
 	$(MAKE) -f Makefile.hdhomerun libcacheget
+	$(MAKE) -f Makefile.hdhomerun build
+	$(MAKE) -f Makefile.hdhomerun libcacheput
+else
+	$(MAKE) -f Makefile.hdhomerun build
 endif
-	$(MAKE) -f Makefile.hdhomerun
 
 .PHONY: ffmpeg_rebuild
 ffmpeg_rebuild:
@@ -901,3 +904,24 @@ $(ROOTDIR)/data/dvb-scan/dvb-s/.stamp: $(ROOTDIR)/data/satellites.xml \
 
 .PHONY: satellites_xml
 satellites_xml: $(ROOTDIR)/data/dvb-scan/dvb-s/.stamp
+
+#
+# perf
+#
+
+PERF_DATA = /tmp/tvheadend.perf.data
+PERF_SLEEP ?= 30
+
+$(PERF_DATA): FORCE
+	perf record -F 16000 -g -p $$(pidof tvheadend) -o $(PERF_DATA) sleep $(PERF_SLEEP)
+
+.PHONY: perf-record
+perf-record: $(PERF_DATA)
+
+.PHONY: perf-graph
+perf-graph:
+	perf report --stdio -g graph -i $(PERF_DATA)
+
+.PHONY: perf-report
+perf-report:
+	perf report --stdio -g none -i $(PERF_DATA)

@@ -81,16 +81,25 @@ mpegts_psi_section_reassemble0
     return -1;
 
   if(start) {
-    // Payload unit start indicator
+    /* Payload unit start indicator */
     mt->mt_sect.ps_offset = 0;
-    if((data[0] & mt->mt_sect.ps_mask) != mt->mt_sect.ps_table)
-      mt->mt_sect.ps_lock = 0;
-    else
-      mt->mt_sect.ps_lock = 1;
+    mt->mt_sect.ps_lock = 1;
+    if((data[0] & mt->mt_sect.ps_mask) != mt->mt_sect.ps_table) {
+      if(len >= 3) {
+        tsize = 3 + (((data[1] & 0xf) << 8) | data[2]);
+        if(len >= tsize)
+          return tsize;
+      }
+    }
   }
 
   if(!mt->mt_sect.ps_lock)
     return -1;
+
+  if(mt->mt_sect.ps_offset + len > MPEGTS_PSI_SECTION_SIZE) {
+    tvherror(mt->mt_subsys, "PSI section overflow");
+    return -1;
+  }
 
   memcpy(p + mt->mt_sect.ps_offset, data, len);
   mt->mt_sect.ps_offset += len;
@@ -108,10 +117,12 @@ mpegts_psi_section_reassemble0
   if(p[0] == 0x72) { /* stuffing section */
     cb = NULL;
     crc = 0;
+  } else if((p[0] & mt->mt_sect.ps_mask) != mt->mt_sect.ps_table) {
+    cb = NULL;
   }
 
   if(crc && tvh_crc32(p, tsize, 0xffffffff)) {
-    if (tvhlog_limit(&mt->mt_err_log, 10)) {
+    if (cb && tvhlog_limit(&mt->mt_err_log, 10)) {
       tvhwarn(mt->mt_subsys, "%s: %s: invalid checksum (len %i, errors %zi)",
               mt->mt_name, logpref, tsize, mt->mt_err_log.count);
     }
@@ -119,7 +130,6 @@ mpegts_psi_section_reassemble0
   }
 
   excess = mt->mt_sect.ps_offset - tsize;
-  mt->mt_sect.ps_lock = 0;
 
   if (cb)
     cb(p, tsize - (crc ? 4 : 0), opaque);
@@ -157,24 +167,31 @@ mpegts_psi_section_reassemble
   }
 
   if(pusi) {
-    uint8_t len = tsb[off++];
-    if (len > 188 - off) {
-      mt->mt_sect.ps_lock = 0;
-      return;
+    uint8_t len2 = tsb[off++];
+    uint8_t off2 = off;
+    off += len2;
+    if (off > 188)
+      goto wrong_state;
+    while (off2 < len2) {
+      r = mpegts_psi_section_reassemble0(mt, logprefix, tsb + off2, len2, 0, crc, cb, opaque);
+      if (r < 0)
+        goto wrong_state;
+      off2 += r;
+      len2 -= r;
     }
-    mpegts_psi_section_reassemble0(mt, logprefix, tsb + off, len, 0, crc, cb, opaque);
-    off += len;
   }
 
   while(off < 188) {
     r = mpegts_psi_section_reassemble0(mt, logprefix, tsb + off, 188 - off, pusi, crc,
         cb, opaque);
-    if(r < 0) {
-      mt->mt_sect.ps_lock = 0;
-      break;
-    }
+    if (r < 0)
+      goto wrong_state;
     off += r;
   }
+  return;
+
+wrong_state:
+  mt->mt_sect.ps_lock = 0;
 }
 
 /*
@@ -428,6 +445,24 @@ void dvb_table_parse_init
   mt->mt_sect.ps_cc = -1;
   mt->mt_sect.ps_table = table;
   mt->mt_sect.ps_mask = mask;
+}
+
+void dvb_table_parse_reinit_input
+  ( mpegts_psi_table_t *mt )
+{
+  dvb_table_release(mt);
+  mt->mt_last_complete = 0;
+  mt->mt_complete = mt->mt_incomplete = 0;
+  mt->mt_finished = 0;
+  mt->mt_sect.ps_cc = -1;
+  mt->mt_sect.ps_offset = 0;
+  mt->mt_sect.ps_lock = 0;
+}
+
+void dvb_table_parse_reinit_output
+  ( mpegts_psi_table_t *mt )
+{
+  mt->mt_sect.ps_cco = 0;
 }
 
 void dvb_table_parse_done( mpegts_psi_table_t *mt )

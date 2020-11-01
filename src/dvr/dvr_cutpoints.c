@@ -226,8 +226,8 @@ dvr_get_cutpoint_list (dvr_entry_t *de)
   TAILQ_INIT(cuts);
 
   /* Get base filename */
-  // TODO: harcoded 3 for max extension
-  path = alloca(strlen(filename) + 3);
+  // TODO: harcoded 3 for max extension plus 1 for termination
+  path = alloca(strlen(filename) + 4);
   strcpy(path, filename);
   sptr = strrchr(path, '.');
   if (!sptr) {
@@ -273,4 +273,36 @@ dvr_cutpoint_list_destroy (dvr_cutpoint_list_t *list)
     free(cp);
   }
   free(list);
+}
+
+/*
+ * Delete cutpoint files
+ */
+void
+dvr_cutpoint_delete_files (const char *s)
+{
+  char *path, *dot;
+  int i;
+
+  // TODO: harcoded 3 for max extension, plus 1 for . and one for termination
+  path = alloca(strlen(s) + 5);
+
+  /* Check each cutlist extension */
+  for (i = 0; i < ARRAY_SIZE(dvr_cutpoint_parsers); i++) {
+
+    strcpy(path, s);
+    if ((dot = (strrchr(path, '.') + 1)))
+      *dot = 0;
+
+    strcat(path, dvr_cutpoint_parsers[i].ext);
+
+    /* Check file exists */
+    if (access(path, F_OK))
+      continue;
+
+    /* Delete File */
+    tvhinfo(LS_DVR, "Erasing cutpoint file '%s'", (const char *)path);
+    if (unlink(path))
+      tvherror(LS_DVR, "unable to remove cutpoint file '%s'", (const char *)path);
+  }
 }

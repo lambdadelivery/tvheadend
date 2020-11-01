@@ -19,12 +19,13 @@
 #ifndef PACKET_H_
 #define PACKET_H_
 
+#include "esstream.h"
+
 struct memoryinfo;
 
 /**
  * Packet buffer
  */
-
 typedef struct pktbuf {
   int pb_refcount;
   int pb_err;
@@ -69,6 +70,7 @@ typedef struct th_pkt {
       uint16_t pkt_aspect_den;
     } v;
     struct {
+      uint8_t pkt_keyframe;
       uint8_t pkt_channels;
       uint8_t pkt_sri;
       uint8_t pkt_ext_sri;
@@ -80,7 +82,6 @@ typedef struct th_pkt {
 
 } th_pkt_t;
 
-
 /**
  * A packet reference
  */
@@ -89,6 +90,7 @@ typedef struct th_pktref {
   th_pkt_t *pr_pkt;
 } th_pktref_t;
 
+TAILQ_HEAD(th_pktref_queue, th_pktref);
 
 /**
  *

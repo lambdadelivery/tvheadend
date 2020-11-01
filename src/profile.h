@@ -41,6 +41,7 @@ typedef enum {
   PROFILE_SVF_NONE = 0,
   PROFILE_SVF_SD,
   PROFILE_SVF_HD,
+  PROFILE_SVF_FHD,
   PROFILE_SVF_UHD
 } profile_svfilter_t;
 
@@ -145,7 +146,7 @@ typedef struct profile_sharer {
   uint32_t                  prsh_do_queue: 1;
   uint32_t                  prsh_queue_run: 1;
   pthread_t                 prsh_queue_thread;
-  pthread_mutex_t           prsh_queue_mutex;
+  tvh_mutex_t               prsh_queue_mutex;
   tvh_cond_t                prsh_queue_cond;
   TAILQ_HEAD(,profile_sharer_message) prsh_queue;
   streaming_target_t        prsh_input;
@@ -182,7 +183,7 @@ int profile_chain_open(profile_chain_t *prch,
                        muxer_config_t *m_cfg,
                        muxer_hints_t *hints,
                        int flags, size_t qsize);
-void profile_chain_init(profile_chain_t *prch, profile_t *pro, void *id);
+void profile_chain_init(profile_chain_t *prch, profile_t *pro, void *id, int queue);
 int  profile_chain_raw_open(profile_chain_t *prch, void *id, size_t qsize, int muxer);
 void profile_chain_close(profile_chain_t *prch);
 int  profile_chain_weight(profile_chain_t *prch, int custom);

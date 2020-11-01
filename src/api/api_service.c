@@ -31,9 +31,9 @@ static int
 api_mapper_stop
   ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
 {
-  pthread_mutex_lock(&global_lock);
+  tvh_mutex_lock(&global_lock);
   service_mapper_stop();
-  pthread_mutex_unlock(&global_lock);
+  tvh_mutex_unlock(&global_lock);
 
   return 0;
 }
@@ -57,9 +57,9 @@ static int
 api_mapper_status
   ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
 {
-  pthread_mutex_lock(&global_lock);
+  tvh_mutex_lock(&global_lock);
   *resp = api_mapper_status_msg();
-  pthread_mutex_unlock(&global_lock);
+  tvh_mutex_unlock(&global_lock);
   return 0;
 }
 
@@ -119,38 +119,37 @@ api_service_streams
   if (!(uuid = htsmsg_get_str(args, "uuid")))
     return EINVAL;
 
-  pthread_mutex_lock(&global_lock);
+  tvh_mutex_lock(&global_lock);
 
   /* Couldn't find */
   if (!(s = service_find_by_uuid(uuid))) {
-    pthread_mutex_unlock(&global_lock);
+    tvh_mutex_unlock(&global_lock);
     return EINVAL;
   }
 
   /* Build response */
-  pthread_mutex_lock(&s->s_stream_mutex);
+  tvh_mutex_lock(&s->s_stream_mutex);
   st = htsmsg_create_list();
   stf = htsmsg_create_list();
-  if (s->s_pcr_pid) {
+  if (s->s_components.set_pcr_pid) {
     e = htsmsg_create_map();
-    htsmsg_add_u32(e, "pid", s->s_pcr_pid);
+    htsmsg_add_u32(e, "pid", s->s_components.set_pcr_pid);
     htsmsg_add_str(e, "type", "PCR");
     htsmsg_add_msg(st, NULL, e);
   }
-  if (s->s_pmt_pid) {
+  if (s->s_components.set_pmt_pid) {
     e = htsmsg_create_map();
-    htsmsg_add_u32(e, "pid", s->s_pmt_pid);
+    htsmsg_add_u32(e, "pid", s->s_components.set_pmt_pid);
     htsmsg_add_str(e, "type", "PMT");
     htsmsg_add_msg(st, NULL, e);
   }
-  TAILQ_FOREACH(es, &s->s_components, es_link) {
+  TAILQ_FOREACH(es, &s->s_components.set_all, es_link) {
     if (es->es_type == SCT_PCR) continue;
     htsmsg_add_msg(st, NULL, api_service_streams_get_one(es, 0));
   }
-  if (TAILQ_FIRST(&s->s_filt_components) == NULL ||
-      s->s_status == SERVICE_IDLE)
-    service_build_filter(s);
-  TAILQ_FOREACH(es, &s->s_filt_components, es_filt_link) {
+  if (elementary_set_has_streams(&s->s_components, 1) || s->s_status == SERVICE_IDLE)
+    elementary_set_filter_build(&s->s_components);
+  TAILQ_FOREACH(es, &s->s_components.set_filter, es_filter_link) {
     if (es->es_type == SCT_PCR) continue;
     htsmsg_add_msg(stf, NULL, api_service_streams_get_one(es, 1));
   }
@@ -158,7 +157,7 @@ api_service_streams
   htsmsg_add_str(*resp, "name", s->s_nicename);
   if (s->s_hbbtv)
     hbbtv = htsmsg_copy(s->s_hbbtv);
-  pthread_mutex_unlock(&s->s_stream_mutex);
+  tvh_mutex_unlock(&s->s_stream_mutex);
 
   htsmsg_add_msg(*resp, "streams", st);
   htsmsg_add_msg(*resp, "fstreams", stf);
@@ -166,7 +165,7 @@ api_service_streams
     htsmsg_add_msg(*resp, "hbbtv", hbbtv);
 
   /* Done */
-  pthread_mutex_unlock(&global_lock);
+  tvh_mutex_unlock(&global_lock);
   return 0;
 }
 
@@ -177,9 +176,9 @@ api_service_remove_unseen
   int days = htsmsg_get_s32_or_default(args, "days", 7);
   const char *type = htsmsg_get_str(args, "type");
 
-  pthread_mutex_lock(&global_lock);
+  tvh_mutex_lock(&global_lock);
   service_remove_unseen(type, days);
-  pthread_mutex_unlock(&global_lock);
+  tvh_mutex_unlock(&global_lock);
   return 0;
 }
 
